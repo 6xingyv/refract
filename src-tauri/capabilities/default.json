@@ -1,0 +1,30 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the main window",
+  "windows": ["main", "ictool-popover-*"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:default",
+    "fs:allow-read-text-file",
+    "fs:allow-read-file",
+    "fs:allow-write-file",
+    "core:window:allow-start-dragging",
+    "core:window:allow-close",
+    "core:window:allow-create",
+    "core:window:allow-destroy",
+    "core:window:allow-hide",
+    "core:window:allow-minimize",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-focusable",
+    "core:window:allow-set-effects",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-set-skip-taskbar",
+    "core:window:allow-show",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-toggle-maximize"
+  ]
+}

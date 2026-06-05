@@ -1,0 +1,255 @@
+@import "tailwindcss";
+
+@theme {
+  --color-accent: #0a84ff;
+}
+
+:root {
+  color-scheme: light;
+  font-family: -apple-system, "SF Pro Text", "SF Pro Display", system-ui, "Segoe UI", sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+
+  /* adaptive panel ink/lines (overridden by .ui-dark when the canvas is dark) */
+  --tx: rgba(0, 0, 0, 0.88);
+  --tx-2: rgba(0, 0, 0, 0.62);
+  --tx-3: rgba(0, 0, 0, 0.42);
+  --line: rgba(0, 0, 0, 0.10);
+  --hover: rgba(0, 0, 0, 0.06);
+  --chip: rgba(0, 0, 0, 0.05);
+  --panel: rgba(255, 255, 255, 0.46);
+  --control: rgba(255, 255, 255, 0.48);
+  --control-hover: rgba(255, 255, 255, 0.66);
+  --control-active: rgba(255, 255, 255, 0.86);
+  --popover: rgba(255, 255, 255, 0.88);
+  --popover-window: rgba(255, 255, 255, 0.58);
+  --control-shadow: rgba(0, 0, 0, 0.10);
+}
+
+.ui-dark {
+  --tx: rgba(255, 255, 255, 0.92);
+  --tx-2: rgba(255, 255, 255, 0.66);
+  --tx-3: rgba(255, 255, 255, 0.46);
+  --line: rgba(255, 255, 255, 0.14);
+  --hover: rgba(255, 255, 255, 0.10);
+  --chip: rgba(255, 255, 255, 0.12);
+  --panel: rgba(17, 22, 31, 0.52);
+  --control: rgba(255, 255, 255, 0.13);
+  --control-hover: rgba(255, 255, 255, 0.20);
+  --control-active: rgba(255, 255, 255, 0.27);
+  --popover: rgba(24, 29, 38, 0.90);
+  --popover-window: rgba(24, 29, 38, 0.56);
+  --control-shadow: rgba(0, 0, 0, 0.25);
+}
+
+*[data-tauri-drag-region] {
+  app-region: drag;
+  -webkit-app-region: drag;
+}
+
+*[data-tauri-no-drag],
+button,
+input,
+select,
+textarea,
+label {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* the macOS wallpaper that the translucent sidebars sample (vibrancy) */
+.wallpaper {
+  background:
+    radial-gradient(at 12% 8%, #ff7ab8 0, transparent 45%),
+    radial-gradient(at 88% 4%, #ffd36b 0, transparent 42%),
+    radial-gradient(at 4% 78%, #ff9e6b 0, transparent 48%),
+    radial-gradient(at 96% 86%, #5db8ff 0, transparent 46%),
+    radial-gradient(at 62% 44%, #c79bff 0, transparent 55%),
+    linear-gradient(135deg, #ffba84 0%, #ff8fbf 40%, #8aa6ff 100%);
+}
+
+.vibrancy {
+  backdrop-filter: blur(40px) saturate(1.4);
+  -webkit-backdrop-filter: blur(40px) saturate(1.4);
+}
+
+.panel-surface {
+  background: var(--panel);
+  backdrop-filter: blur(40px) saturate(1.5);
+  -webkit-backdrop-filter: blur(40px) saturate(1.5);
+}
+
+.control-pill {
+  border-radius: 9999px;
+  background: var(--control);
+  color: var(--tx-2);
+  box-shadow: 0 1px 4px var(--control-shadow);
+  backdrop-filter: blur(40px) saturate(1.5);
+  -webkit-backdrop-filter: blur(40px) saturate(1.5);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.control-pill:hover,
+.preview-command:hover {
+  background: var(--control-hover);
+}
+
+.control-pill-active {
+  background: var(--control-active);
+}
+
+.preview-command {
+  color: var(--tx-2);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.light-dial {
+  background: var(--chip);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.dropdown-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+  color: var(--tx);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.dropdown-trigger-chip {
+  height: 22px;
+  max-width: 140px;
+  padding: 0 6px 0 8px;
+  border-radius: 6px;
+  background: var(--chip);
+  font-size: 12px;
+}
+
+.dropdown-trigger-chip:hover {
+  background: var(--hover);
+}
+
+.dropdown-trigger-plain {
+  height: 18px;
+  max-width: 96px;
+  padding: 0 0 0 4px;
+  color: var(--tx-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.dropdown-trigger-plain:hover {
+  color: var(--tx-2);
+}
+
+.native-dropdown-window,
+.native-wallpaper-window {
+  width: 100vw;
+  height: 100vh;
+  background: var(--popover-window);
+}
+
+.native-dropdown-window {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  padding: 5px;
+}
+
+.native-dropdown-option {
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: var(--tx-2);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.native-dropdown-option:hover {
+  background: var(--hover);
+  color: var(--tx);
+}
+
+.native-wallpaper-window {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 8px;
+  padding: 10px;
+}
+
+.native-wallpaper-option {
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.native-option-selected {
+  background-color: var(--control-active);
+  color: var(--tx);
+  box-shadow: inset 0 0 0 2px #0a84ff;
+}
+
+.native-tooltip-window {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  padding: 0 7px;
+  background: var(--popover-window);
+  color: var(--tx-2);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.window-control {
+  width: 46px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--tx-2);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.window-control:hover {
+  background: var(--hover);
+  color: var(--tx);
+}
+
+.window-control-close:hover {
+  background: #e81123;
+  color: white;
+}
+
+.traffic-light {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.16);
+}
+
+.traffic-light-close { background: #ff5f57; }
+.traffic-light-minimize { background: #ffbd2e; }
+.traffic-light-maximize { background: #28c840; }
+
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.18); border-radius: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+.ui-dark *::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.22); }
