@@ -23,12 +23,14 @@ export type PopupPayload =
 
 type PopupResult = { sourceId: string; value?: string | number; cancelled?: boolean };
 type PopupReady = { label: string };
+type Unlisten = () => void;
 type PopupSlot = {
   kind: PopoverKind;
   label: string;
   win: WebviewWindow;
   ready: Promise<void>;
   activeSourceId: string | null;
+  focusUnlisten: Promise<Unlisten> | null;
 };
 
 const EDGE = 8;
@@ -70,7 +72,7 @@ function hasActivePopover() {
   return [...slots.values()].some((slot) => slot.activeSourceId);
 }
 
-function popoverEffect(kind: PopoverKind) {
+function popoverEffect() {
   const isMac = navigator.platform.toLowerCase().includes("mac");
   if (!isMac) {
     return {
@@ -79,7 +81,7 @@ function popoverEffect(kind: PopoverKind) {
     };
   }
   return {
-    effects: [kind === "tooltip" ? Effect.Tooltip : Effect.Popover],
+    effects: [Effect.Popover],
     state: EffectState.Active,
   };
 }
@@ -106,7 +108,7 @@ function sizeFor(payload: PopupPayload, anchorWidth: number) {
     return { width: 156, height: rows * 54 + 20 + Math.max(0, rows - 1) * 8 };
   }
   if (payload.kind === "color") {
-    return { width: 220, height: 238 };
+    return { width: 220, height: 190 };
   }
   if (payload.kind === "contextMenu") {
     const maxLabel = payload.items.reduce((n, item) => Math.max(n, item.label.length), 0);
@@ -118,9 +120,22 @@ function sizeFor(payload: PopupPayload, anchorWidth: number) {
   }
   const maxLabel = payload.options.reduce((n, o) => Math.max(n, o.length), 0);
   return {
-    width: Math.max(Math.ceil(anchorWidth), textWidth("X".repeat(maxLabel), 88, 180)),
+    width: Math.max(Math.ceil(anchorWidth), textWidth("X".repeat(maxLabel), payload.variant === "plain" ? 150 : 88, 220)),
     height: Math.min(240, payload.options.length * 26 + 10),
   };
+}
+
+function closeSlotIfFocusLeft(slot: PopupSlot) {
+  window.setTimeout(() => {
+    const activeId = slot.activeSourceId;
+    if (!activeId) return;
+    void TauriWindow.getFocusedWindow().then((focusedWindow) => {
+      if (focusedWindow?.label === slot.label) return;
+      void closeNativePopover(activeId);
+    }).catch(() => {
+      void closeNativePopover(activeId);
+    });
+  }, 0);
 }
 
 async function screenPosition(anchor: HTMLElement, size: { width: number; height: number }, placement: Placement) {
@@ -223,7 +238,7 @@ async function ensurePopoverSlot(kind: PopoverKind) {
   });
 
   let existing = await WebviewWindow.getByLabel(label).catch(() => null);
-  if (existing && kind === "color") {
+  if (existing && kind !== "tooltip") {
     await existing.destroy().catch(() => {});
     existing = null;
   }
@@ -233,8 +248,8 @@ async function ensurePopoverSlot(kind: PopoverKind) {
     backgroundColor: "#00000000",
     closable: false,
     decorations: false,
-    focus: kind === "color",
-    focusable: kind === "color",
+    focus: false,
+    focusable: true,
     height: 1,
     parent: parent.label,
     preventOverflow: true,
@@ -245,13 +260,16 @@ async function ensurePopoverSlot(kind: PopoverKind) {
     url: popupUrl(kind),
     visible: false,
     width: 1,
-    windowEffects: popoverEffect(kind),
+    windowEffects: popoverEffect(),
     x: 0,
     y: 0,
   });
 
-  const slot: PopupSlot = { kind, label, win, ready, activeSourceId: null };
+  const slot: PopupSlot = { kind, label, win, ready, activeSourceId: null, focusUnlisten: null };
   slots.set(kind, slot);
+  slot.focusUnlisten = win.onFocusChanged(({ payload: focused }) => {
+    if (!focused) closeSlotIfFocusLeft(slot);
+  });
   if (existing) {
     finishReady();
   } else {
@@ -265,7 +283,7 @@ async function ensurePopoverSlot(kind: PopoverKind) {
 
 export async function prewarmNativePopovers() {
   if (!isTauri()) return;
-  await Promise.all(POPUP_KINDS.filter((kind) => kind !== "color").map(async (kind) => {
+  await Promise.all(POPUP_KINDS.filter((kind) => kind === "tooltip").map(async (kind) => {
     const slot = await ensurePopoverSlot(kind);
     await slot.ready;
   }));
@@ -285,7 +303,6 @@ export async function closeNativePopover(id: string) {
     slot.activeSourceId = null;
     try {
       await slot.win.hide();
-      await emitTo(slot.label, payloadEvent(slot.kind), null);
     } catch {}
     return;
   }
@@ -313,9 +330,26 @@ async function destroyPopoverSlot(kind: PopoverKind) {
   slots.delete(kind);
   readyResolvers.delete(slot.label);
   try {
+    (await slot.focusUnlisten)?.();
+  } catch {}
+  try {
     await slot.win.destroy();
   } catch {
     try { await slot.win.close(); } catch {}
+  }
+}
+
+async function showPopoverSlot(slot: PopupSlot) {
+  suppressBlurUntil = Date.now() + 350;
+  if (slot.kind === "tooltip") {
+    await slot.win.setIgnoreCursorEvents(true).catch(() => {});
+    await slot.win.setFocusable(false).catch(() => {});
+    await slot.win.show();
+  } else {
+    await slot.win.setIgnoreCursorEvents(false).catch(() => {});
+    await slot.win.setFocusable(true).catch(() => {});
+    await slot.win.show();
+    await slot.win.setFocus().catch(() => {});
   }
 }
 
@@ -349,8 +383,7 @@ async function openNativePopover(anchor: HTMLElement, payload: PopupPayload, pla
     return null;
   }
 
-  suppressBlurUntil = Date.now() + 250;
-  await slot.win.show();
+  await showPopoverSlot(slot);
   return slot.win;
 }
 
@@ -384,13 +417,13 @@ async function openNativePopoverAtPoint(clientX: number, clientY: number, payloa
     return null;
   }
 
-  suppressBlurUntil = Date.now() + 250;
-  await slot.win.show();
+  await showPopoverSlot(slot);
   return slot.win;
 }
 
 export async function openNativeDropdown(anchor: HTMLElement, value: string, options: string[], variant: "chip" | "plain") {
   await closeNativePopoversByKind("tooltip");
+  await destroyPopoverSlot("dropdown");
   const id = sourceId("dropdown");
   const dark = appIsDarkMode();
   const payload: PopupPayload = { kind: "dropdown", sourceId: id, value, options, variant, dark };
@@ -401,6 +434,7 @@ export async function openNativeDropdown(anchor: HTMLElement, value: string, opt
 
 export async function openNativeWallpaper(anchor: HTMLElement, presets: string[], selected: number) {
   await closeNativePopoversByKind("tooltip");
+  await destroyPopoverSlot("wallpaper");
   const id = sourceId("wallpaper");
   const dark = appIsDarkMode();
   const win = await openNativePopover(anchor, { kind: "wallpaper", sourceId: id, presets, selected, dark }, "bottom-end");
@@ -420,6 +454,7 @@ export async function openNativeColorPicker(anchor: HTMLElement, value: string) 
 
 export async function openNativeContextMenu(clientX: number, clientY: number, items: NativeContextMenuItem[]) {
   await closeNativePopoversByKind("tooltip");
+  await destroyPopoverSlot("contextMenu");
   const id = sourceId("contextMenu");
   const dark = appIsDarkMode();
   const win = await openNativePopoverAtPoint(clientX, clientY, { kind: "contextMenu", sourceId: id, items, dark });
@@ -433,6 +468,7 @@ export function NativeTooltipProvider() {
 
   React.useEffect(() => {
     if (!isTauri()) return;
+    const appWindow = getCurrentWindow();
     void prewarmNativePopovers();
     const show = (target: EventTarget | null) => {
       const el = target instanceof Element ? target.closest<HTMLElement>("[data-tooltip]") : null;
@@ -470,6 +506,10 @@ export function NativeTooltipProvider() {
       active.current = null;
       void closeAllNativePopovers();
     };
+    const resetTooltipSlot = () => {
+      active.current = null;
+      void destroyPopoverSlot("tooltip");
+    };
     const onPointerDown = () => {
       if (hasActivePopover()) hideAll();
     };
@@ -480,7 +520,11 @@ export function NativeTooltipProvider() {
           const focusedLabel = focusedWindow?.label ?? "";
           if (focusedLabel.startsWith("refract-popover-")) return;
           hideAll();
-        }).catch(hideAll);
+          resetTooltipSlot();
+        }).catch(() => {
+          hideAll();
+          resetTooltipSlot();
+        });
       }, 0);
     };
     document.addEventListener("pointerover", onPointerOver);
@@ -488,10 +532,20 @@ export function NativeTooltipProvider() {
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener("focusout", onFocusOut);
     document.addEventListener("pointerdown", onPointerDown, { capture: true });
-    const unlistenMoved = getCurrentWindow().onMoved(hideAll);
-    const unlistenResized = getCurrentWindow().onResized(hideAll);
-    const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (!focused) handleBlur();
+    const unlistenMoved = appWindow.onMoved(() => {
+      hideAll();
+      resetTooltipSlot();
+    });
+    const unlistenResized = appWindow.onResized(() => {
+      hideAll();
+      resetTooltipSlot();
+    });
+    const unlistenFocus = appWindow.onFocusChanged(({ payload: focused }) => {
+      if (focused) {
+        resetTooltipSlot();
+      } else {
+        handleBlur();
+      }
     });
     return () => {
       document.removeEventListener("pointerover", onPointerOver);
@@ -639,7 +693,7 @@ export function PopupWindow() {
     const eventName = popupKind ? payloadEvent(popupKind) : "native-popover-payload";
     void listen<PopupPayload | null>(eventName, (event) => {
       if (event.payload && popupKind && event.payload.kind !== popupKind) return;
-      setPayload(event.payload);
+      if (event.payload) setPayload(event.payload);
     }).then((fn) => {
       if (disposed) {
         fn();
@@ -661,7 +715,6 @@ export function PopupWindow() {
   const send = async (value?: string | number) => {
     if (!payload) return;
     await emitTo("main", "native-popover-result", { sourceId: payload.sourceId, value });
-    setPayload(null);
     await getCurrentWindow().hide();
   };
 

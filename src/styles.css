@@ -182,9 +182,6 @@ body,
 .native-context-menu-window {
   width: 100vw;
   height: 100vh;
-  background: var(--native-popover-bg);
-  backdrop-filter: blur(32px) saturate(1.35);
-  -webkit-backdrop-filter: blur(32px) saturate(1.35);
 }
 
 .native-dropdown-window,
@@ -244,18 +241,15 @@ body,
 .native-color-window {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   width: 100vw;
   height: 100vh;
   padding: 10px;
-  background: var(--native-popover-bg);
-  backdrop-filter: blur(32px) saturate(1.35);
-  -webkit-backdrop-filter: blur(32px) saturate(1.35);
 }
 
 .native-color-sv {
   position: relative;
-  height: 142px;
+  height: 118px;
   border-radius: 8px;
   box-shadow: inset 0 0 0 1px var(--native-popover-line);
   cursor: crosshair;
@@ -278,7 +272,7 @@ body,
 
 .native-color-hue {
   position: relative;
-  height: 14px;
+  height: 12px;
   border-radius: 9999px;
   background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
   box-shadow: inset 0 0 0 1px var(--native-popover-line);
@@ -288,7 +282,7 @@ body,
 .native-color-hue-thumb {
   top: 50%;
   width: 8px;
-  height: 20px;
+  height: 18px;
   border-radius: 9999px;
 }
 
@@ -338,11 +332,8 @@ body,
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  padding: 0 7px;
-  background: var(--native-popover-bg);
-  color: var(--native-popover-tx-2);
-  backdrop-filter: blur(32px) saturate(1.35);
-  -webkit-backdrop-filter: blur(32px) saturate(1.35);
+  padding: 0;
+  color: var(--native-popover-tx);
   font-size: 11px;
   line-height: 16px;
   white-space: nowrap;

@@ -8,8 +8,7 @@ const POPOVER_LABEL_PREFIX: &str = "refract-popover-";
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
 #[derive(Serialize)]
@@ -126,7 +125,8 @@ fn configure_popover_window_flags<R: tauri::Runtime>(window: &tauri::Window<R>) 
 
     unsafe {
         let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-        let next = (current | WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) & !WS_EX_APPWINDOW.0;
+        let mut next = (current | WS_EX_TOOLWINDOW.0) & !WS_EX_APPWINDOW.0;
+        next &= !WS_EX_NOACTIVATE.0;
         if next != current {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next as isize);
         }
@@ -137,7 +137,7 @@ fn configure_popover_window_flags<R: tauri::Runtime>(window: &tauri::Window<R>) 
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
         );
     }
 }
