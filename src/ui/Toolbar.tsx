@@ -15,6 +15,8 @@ export function Toolbar() {
   const update = useStore((s) => s.update);
   const zoom = useStore((s) => s.zoom);
   const setZoom = useStore((s) => s.setZoom);
+  const lightAngleDeg = useStore((s) => s.lightAngleDeg);
+  const setLightAngle = useStore((s) => s.setLightAngle);
   const openIcon = useStore((s) => s.openIcon);
   const saveIcon = useStore((s) => s.saveIcon);
   const exportPng = useStore((s) => s.exportPng);
@@ -40,11 +42,11 @@ export function Toolbar() {
       {/* light angle */}
       <div className="control-pill flex items-center h-[26px] px-2.5 gap-1">
         <span className="w-3 h-3 rounded-full bg-yellow-400/90 inline-block" />
-        <input
-          className="w-9 bg-transparent text-[12px] text-[color:var(--tx-2)] outline-none tabular-nums"
-          value={`${Math.round(doc.lightAngleDeg)}°`}
-          onChange={(e) => { const n = parseInt(e.target.value); if (!isNaN(n)) update((d) => ({ ...d, lightAngleDeg: n })); }}
-        />
+          <input
+            className="w-9 bg-transparent text-[12px] text-[color:var(--tx-2)] outline-none tabular-nums"
+            value={`${Math.round(lightAngleDeg)}°`}
+            onChange={(e) => { const n = parseInt(e.target.value); if (!isNaN(n)) setLightAngle(n); }}
+          />
       </div>
 
       {/* zoom */}

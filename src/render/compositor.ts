@@ -17,14 +17,21 @@ interface AppearanceMode { monoFamily: boolean; tinted: boolean; hasBackdrop: bo
 
 export class AssetStore {
   private images = new Map<string, HTMLImageElement>();
+  private version = 0;
+
+  get revision() {
+    return this.version;
+  }
 
   async set(entries: AssetEntry[]) {
     this.images.clear();
     await Promise.all(entries.map((e) => this.add(e.name, e.dataUrl)));
+    this.version += 1;
   }
   async add(name: string, dataUrl: string) {
     const img = await loadImage(dataUrl);
     this.images.set(name, img);
+    this.version += 1;
   }
   get(name: string | null): HTMLImageElement | undefined {
     return name ? this.images.get(name) : undefined;
@@ -63,17 +70,28 @@ function tmpCanvas(size: number): HTMLCanvasElement {
   c.width = size; c.height = size;
   return c;
 }
-function tmpCanvasWH(w: number, h: number): HTMLCanvasElement {
-  const c = document.createElement("canvas");
-  c.width = w; c.height = h;
-  return c;
-}
 
 export class Compositor {
+  private shapeCache = new Map<string, { data: ImageData; sampled: IcColor | null }>();
+  private chicletCache = new Map<string, HTMLCanvasElement>();
+
   constructor(private renderer: Renderer | null, private assets: AssetStore) {}
+
+  private shapeKey(layer: Layer, size: number) {
+    return `${this.assets.revision}:${layer.imageName ?? "__placeholder"}:${size}`;
+  }
+
+  private chicletKey(doc: IconDocument, size: number, backdrop: BackdropSpec) {
+    const bg = backdrop.kind === "image" ? `image:${backdrop.image}` : `color:${backdrop.color}`;
+    return `${doc.previewPlatform}:${size}:${bg}`;
+  }
 
   /** Rasterize a layer's asset to a size x size canvas (scaled-to-fit, 2x supersampled). */
   private rasterizeShape(layer: Layer, size: number): ImageData {
+    const key = this.shapeKey(layer, size);
+    const cached = this.shapeCache.get(key);
+    if (cached) return cached.data;
+
     const img = this.assets.get(layer.imageName);
     // SVG / placeholder = vector -> supersample 4x for crisp edges; raster only 2x.
     const isVector = !layer.imageName || layer.imageName.toLowerCase().endsWith(".svg");
@@ -102,7 +120,24 @@ export class Compositor {
     octx.imageSmoothingEnabled = true;
     octx.imageSmoothingQuality = "high";
     octx.drawImage(c, 0, 0, size, size);
-    return octx.getImageData(0, 0, size, size);
+    const data = octx.getImageData(0, 0, size, size);
+    this.shapeCache.set(key, { data, sampled: layer.imageName ? sampledColor(data) : null });
+    if (this.shapeCache.size > 96) this.shapeCache.delete(this.shapeCache.keys().next().value!);
+    return data;
+  }
+
+  private sampledShapeColor(layer: Layer, size: number, shape: ImageData): IcColor | null {
+    if (!layer.imageName) return null;
+    const key = this.shapeKey(layer, size);
+    const cached = this.shapeCache.get(key);
+    if (cached) return cached.sampled;
+    const sampled = sampledColor(shape);
+    this.shapeCache.set(key, { data: shape, sampled });
+    return sampled;
+  }
+
+  private glassLayerOn(group: Group, layer: Layer, ap: AppearanceMode) {
+    return group.glassEnabled && !!this.renderer && (ap.monoFamily ? ap.hasBackdrop : layer.isGlass);
   }
 
   /** Cheap per-layer preview thumbnail (asset image, or fill-tinted placeholder); no glass/bg/chiclet. */
@@ -134,23 +169,54 @@ export class Compositor {
     if (ap.monoFamily) {
       if (ap.hasBackdrop) { ctx.fillStyle = "#808080"; ctx.fillRect(0, 0, size, size); }
     } else {
-      if (backdrop) paintBackdrop(ctx, size, size, backdrop);
       // Chiclet glass BODY = refract ONLY what's behind the glass (the backdrop) into a shaped slab.
       // The design (colour-tint) is painted ON TOP next, so it sits on the glass and is NOT refracted
       // by its own container; the highlight rim then goes on top of that. Order: refraction → colour → rim.
       if (ap.hasBackdrop && backdrop) await this.applyChicletRefraction(ctx, doc, size, backdrop);
+      else if (backdrop) paintBackdrop(ctx, size, size, backdrop);
       paintBackground(ctx, doc, size, slot);
     }
 
-    // hierarchy order is front-to-back; composite back-to-front
+    const drawItems: { group: Group; layer: Layer; shape: ImageData }[] = [];
     for (const groupRaw of [...doc.composition.groups].reverse()) {
       const group = resolveGroup(groupRaw, slot, doc.previewPlatform);
       if (group.isHidden) continue;
       for (const layerRaw of [...group.layers].reverse()) {
         const layer = resolveLayer(layerRaw, slot, doc.previewPlatform);
         if (layer.isHidden) continue;
-        await this.drawLayer(ctx, doc, group, layer, size, ap);
+        drawItems.push({ group, layer, shape: this.rasterizeShape(layer, size) });
       }
+    }
+    if (this.renderer) {
+      const prepares: {
+        shape: Uint8Array<ArrayBuffer>;
+        size: number;
+        uniforms: Float32Array<ArrayBuffer>;
+        shapeKey: string;
+      }[] = [];
+      for (const item of drawItems) {
+        if (!this.glassLayerOn(item.group, item.layer, ap)) continue;
+        const sampled = this.sampledShapeColor(item.layer, size, item.shape);
+        const clearBg = ap.monoFamily && !item.layer.isGlass;
+        const g2 = clearBg ? { ...item.group, translucency: { enabled: true, value: 1 }, blurMaterial: { enabled: false, strength: 0 } } : item.group;
+        const layerU = clearBg ? { ...item.layer, isGlass: true, fill: { ...item.layer.fill, kind: "none" as const } } : item.layer;
+        const docU = ap.monoFamily ? ({ ...doc, previewRendition: (ap.tinted ? "TintedLight" : "Mono") as Rendition }) : doc;
+        const u = buildUniforms(size, docU, g2, layerU, sampled, layerU.imageName != null);
+        prepares.push({
+          shape: new Uint8Array(item.shape.data.buffer),
+          size,
+          uniforms: u,
+          shapeKey: this.shapeKey(item.layer, size),
+        });
+      }
+      if (prepares.length) this.renderer.prepareShapes(prepares);
+    }
+
+    // hierarchy order is front-to-back; composite back-to-front. Shape/SDF preparation above is
+    // independent per layer; this loop remains serial because each glass layer samples the pixels
+    // already composited below it.
+    for (const item of drawItems) {
+      await this.drawLayer(ctx, doc, item.group, item.layer, item.shape, size, ap);
     }
 
     // Container: mask to the chiclet shape, then a clean continuous rim. The per-layer glass already
@@ -166,34 +232,22 @@ export class Compositor {
   }
 
   /**
-   * Full preview SCENE: one canvas the size of the preview pane, the backdrop filling it and the
-   * icon composited centred on it (glass refracting the same backdrop). The backdrop is therefore
-   * part of the same canvas — no separate CSS layer that lags behind the icon when the bg changes.
-   * Rendered at 2x for retina sharpness; the icon is centred in the area between the top/bottom bars.
-   */
-  async renderScene(doc: IconDocument, cssW: number, cssH: number, slot: string | null, backdrop: BackdropSpec | undefined, zoom: number): Promise<HTMLCanvasElement> {
-    // retina-ish sharpness, but cap the longest edge so toDataURL of the scene stays cheap
-    const SC = Math.max(1, Math.min(2, 1800 / Math.max(cssW, cssH, 1)));
-    const W = Math.max(2, Math.round(cssW * SC)), H = Math.max(2, Math.round(cssH * SC));
-    // window-level layout: side panels (Hierarchy 230, Inspector 300) + preview bars (top 44, bottom 92)
-    const LEFT = 230 * SC, RIGHT = 300 * SC, TOP = 44 * SC, BOTTOM = 92 * SC;
-    const scene = tmpCanvasWH(W, H);
-    const sctx = scene.getContext("2d")!;
-    if (backdrop) paintBackdrop(sctx, W, H, backdrop);
-    const cw = Math.max(120, W - LEFT - RIGHT), ah = Math.max(120, H - TOP - BOTTOM);
-    const iconSize = Math.max(48, Math.round(Math.min(cw, ah) * 0.62 * Math.min(2.5, Math.max(0.4, zoom))));
-    const icon = await this.render(doc, iconSize, slot, backdrop);
-    sctx.drawImage(icon, Math.round(LEFT + cw / 2 - iconSize / 2), Math.round(TOP + ah / 2 - iconSize / 2));
-    return scene;
-  }
-
-  /**
    * Chiclet glass BODY: refract ONLY the backdrop (what's behind the icon) through the chiclet
    * shape and REPLACE the canvas with the shaped slab. The design (colour) is composited on top
    * afterwards, so it is never displaced by its own container's refraction. Rendered at a padded
    * resolution so the shape outline is JFA-seeded off the canvas edge, then cropped to full-bleed.
    */
   private async applyChicletRefraction(ctx: CanvasRenderingContext2D, doc: IconDocument, size: number, backdrop: BackdropSpec) {
+    const key = this.chicletKey(doc, size, backdrop);
+    const cached = this.chicletCache.get(key);
+    if (cached) {
+      this.chicletCache.delete(key);
+      this.chicletCache.set(key, cached);
+      ctx.clearRect(0, 0, size, size);
+      ctx.drawImage(cached, 0, 0);
+      return;
+    }
+
     const pad = Math.max(4, Math.round(size * 0.05));
     const ps = size + 2 * pad;
     const p = PLATFORMS[doc.previewPlatform];
@@ -206,11 +260,15 @@ export class Compositor {
     const out = await this.renderer!.render(
       new Uint8Array(sx.getImageData(0, 0, ps, ps).data.buffer),
       new Uint8Array(bx.getImageData(0, 0, ps, ps).data.buffer),
-      ps, chicletUniforms(ps, doc),
+      ps, chicletUniforms(ps, doc), `chiclet:${doc.previewPlatform}:${ps}`,
     );
     const oc = tmpCanvas(ps); oc.getContext("2d")!.putImageData(new ImageData(out, ps, ps), 0, 0);
+    const cropped = tmpCanvas(size);
+    cropped.getContext("2d")!.drawImage(oc, -pad, -pad); // crop the centre back to full-bleed
+    this.chicletCache.set(key, cropped);
+    if (this.chicletCache.size > 24) this.chicletCache.delete(this.chicletCache.keys().next().value!);
     ctx.clearRect(0, 0, size, size);
-    ctx.drawImage(oc, -pad, -pad); // crop the centre back to full-bleed
+    ctx.drawImage(cropped, 0, 0);
   }
 
   /**
@@ -245,15 +303,14 @@ export class Compositor {
     ctx.restore();
   }
 
-  private async drawLayer(ctx: CanvasRenderingContext2D, doc: IconDocument, group: Group, layer: Layer, size: number, ap: AppearanceMode) {
-    const shapeData = this.rasterizeShape(layer, size);
+  private async drawLayer(ctx: CanvasRenderingContext2D, doc: IconDocument, group: Group, layer: Layer, shapeData: ImageData, size: number, ap: AppearanceMode) {
     let layerCanvas: HTMLCanvasElement;
     // Mono/Tinted (with a backdrop to refract): EVERY layer becomes clear glass, then the composite
     // maps it to greyscale (Mono, code 3) or greyscale x tint (Tinted, code 4). Non-mono: glass layers only.
-    const renderGlass = group.glassEnabled && !!this.renderer && (ap.monoFamily ? ap.hasBackdrop : layer.isGlass);
+    const renderGlass = this.glassLayerOn(group, layer, ap);
     if (renderGlass) {
       const bg = ctx.getImageData(0, 0, size, size);
-      const sampled = layer.imageName ? sampledColor(shapeData) : null;
+      const sampled = this.sampledShapeColor(layer, size, shapeData);
       // Mono: ONLY the (originally non-glass) background becomes clear glass — transparent, no
       // blur, no colour body — so it refracts the backdrop. Real glass layers keep their blur and
       // translucency. The appearance code maps everything to greyscale (Mono) / greyscale x tint (Tinted).
@@ -262,7 +319,7 @@ export class Compositor {
       const layerU = clearBg ? { ...layer, isGlass: true, fill: { ...layer.fill, kind: "none" as const } } : layer;
       const docU = ap.monoFamily ? ({ ...doc, previewRendition: (ap.tinted ? "TintedLight" : "Mono") as Rendition }) : doc;
       const u = buildUniforms(size, docU, g2, layerU, sampled, layerU.imageName != null);
-      const out = await this.renderer!.render(new Uint8Array(shapeData.data.buffer), new Uint8Array(bg.data.buffer), size, u);
+      const out = await this.renderer!.render(new Uint8Array(shapeData.data.buffer), new Uint8Array(bg.data.buffer), size, u, this.shapeKey(layer, size));
       layerCanvas = imageToCanvas(new ImageData(out, size, size));
     } else if (ap.monoFamily) {
       // no-WebGPU fallback: mono = white; tinted = the tint colour (whole icon)

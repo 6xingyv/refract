@@ -29,11 +29,11 @@ export class Gpu {
     return this._sampler;
   }
 
-  texture(w: number, h: number, format: Format, render: boolean): Tex {
+  texture(w: number, h: number, format: Format, render: boolean, persistent = false): Tex {
     let usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
     if (render) usage |= GPUTextureUsage.RENDER_ATTACHMENT;
     const tex = this.device.createTexture({ size: { width: w, height: h }, format, usage });
-    this.transient.push(tex);
+    if (!persistent) this.transient.push(tex);
     return { tex, view: tex.createView(), w, h, format };
   }
 
@@ -71,8 +71,16 @@ export class Gpu {
     return p;
   }
 
+  commandEncoder(): GPUCommandEncoder {
+    return this.device.createCommandEncoder();
+  }
+
+  submit(enc: GPUCommandEncoder) {
+    this.device.queue.submit([enc.finish()]);
+  }
+
   /** Run one fullscreen pass into `target`. resources are uniform + textures (+ optional sampler), in declaration order. */
-  pass(p: { pipeline: GPURenderPipeline; layout: GPUBindGroupLayout; bindings: BindKind[] }, target: Tex, uniform: GPUBuffer, textures: Tex[], sampler?: GPUSampler) {
+  pass(p: { pipeline: GPURenderPipeline; layout: GPUBindGroupLayout; bindings: BindKind[] }, target: Tex, uniform: GPUBuffer, textures: Tex[], sampler?: GPUSampler, enc?: GPUCommandEncoder) {
     const entries: GPUBindGroupEntry[] = [];
     let ti = 0;
     p.bindings.forEach((b, i) => {
@@ -81,22 +89,22 @@ export class Gpu {
       else entries.push({ binding: i, resource: sampler ?? this.sampler() });
     });
     const bindGroup = this.device.createBindGroup({ layout: p.layout, entries });
-    const enc = this.device.createCommandEncoder();
-    const rp = enc.beginRenderPass({ colorAttachments: [{ view: target.view, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" }] });
+    const ownEncoder = enc ?? this.commandEncoder();
+    const rp = ownEncoder.beginRenderPass({ colorAttachments: [{ view: target.view, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" }] });
     rp.setPipeline(p.pipeline);
     rp.setBindGroup(0, bindGroup);
     rp.draw(3);
     rp.end();
-    this.device.queue.submit([enc.finish()]);
+    if (!enc) this.submit(ownEncoder);
   }
 
   /** copyTextureToBuffer (rgba8) + map -> RGBA Uint8ClampedArray (length w*h*4). */
-  async readback(t: Tex, w: number, h: number): Promise<Uint8ClampedArray<ArrayBuffer>> {
+  async readback(t: Tex, w: number, h: number, enc?: GPUCommandEncoder): Promise<Uint8ClampedArray<ArrayBuffer>> {
     const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
     const buf = this.device.createBuffer({ size: bytesPerRow * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    const enc = this.device.createCommandEncoder();
-    enc.copyTextureToBuffer({ texture: t.tex }, { buffer: buf, bytesPerRow, rowsPerImage: h }, { width: w, height: h });
-    this.device.queue.submit([enc.finish()]);
+    const ownEncoder = enc ?? this.commandEncoder();
+    ownEncoder.copyTextureToBuffer({ texture: t.tex }, { buffer: buf, bytesPerRow, rowsPerImage: h }, { width: w, height: h });
+    this.submit(ownEncoder);
     await buf.mapAsync(GPUMapMode.READ);
     const src = new Uint8Array(buf.getMappedRange());
     const out = new Uint8ClampedArray(w * h * 4);

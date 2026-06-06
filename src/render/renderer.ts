@@ -1,6 +1,6 @@
 // The glass pass graph - browser WebGPU port of WgpuRenderEngine.renderOnGpu.
 // JFA -> SDF -> sdf_blur -> distance_gradient ; background blur ; shadow ; glass/color/highlight ; composite.
-import { Gpu, Format, BindKind } from "./gpu";
+import { Gpu, Format, BindKind, type Tex } from "./gpu";
 import { patch } from "./uniforms";
 
 import common from "./shaders/common.wgsl.inc?raw";
@@ -26,8 +26,33 @@ const SRC: Record<string, string> = {
 
 const F16: Format = "rgba16float";
 const F8: Format = "rgba8unorm";
+const SHAPE_CACHE_LIMIT = 48;
+
+interface ShapeResources {
+  key: string | null;
+  shapeTex: Tex;
+  seedTex: Tex;
+  sdfTex: Tex;
+  dgTex: Tex;
+  owned: Tex[];
+}
+
+interface ShadowResources {
+  key: string;
+  shadowTex: Tex;
+}
+
+interface ShapePrepare {
+  shape: Uint8Array<ArrayBuffer>;
+  size: number;
+  uniforms: Float32Array<ArrayBuffer>;
+  shapeKey: string;
+}
 
 export class Renderer {
+  private shapeCache = new Map<string, ShapeResources>();
+  private shadowCache = new Map<string, ShadowResources>();
+
   constructor(private gpu: Gpu) {}
 
   static async create(): Promise<Renderer> {
@@ -38,68 +63,196 @@ export class Renderer {
     return this.gpu.pipeline(name, common + "\n" + SRC[name], target, bindings);
   }
 
-  /** Render one glass layer. shape/bg are RGBA8 (length size*size*4). Returns RGBA8 result. */
-  async render(shape: Uint8Array<ArrayBuffer>, bg: Uint8Array<ArrayBuffer>, size: number, u: Float32Array<ArrayBuffer>): Promise<Uint8ClampedArray<ArrayBuffer>> {
+  private destroyShapeResources(r: ShapeResources) {
+    for (const t of r.owned) t.tex.destroy();
+  }
+
+  private destroyShadowResources(r: ShadowResources) {
+    r.shadowTex.tex.destroy();
+  }
+
+  clearShapeCache() {
+    for (const r of this.shapeCache.values()) this.destroyShapeResources(r);
+    for (const r of this.shadowCache.values()) this.destroyShadowResources(r);
+    this.shapeCache.clear();
+    this.shadowCache.clear();
+  }
+
+  private trimShapeCache() {
+    while (this.shapeCache.size > SHAPE_CACHE_LIMIT) {
+      const first = this.shapeCache.keys().next().value;
+      if (!first) return;
+      const r = this.shapeCache.get(first);
+      if (r) this.destroyShapeResources(r);
+      this.shapeCache.delete(first);
+    }
+  }
+
+  private trimShadowCache() {
+    while (this.shadowCache.size > SHAPE_CACHE_LIMIT) {
+      const first = this.shadowCache.keys().next().value;
+      if (!first) return;
+      const r = this.shadowCache.get(first);
+      if (r) this.destroyShadowResources(r);
+      this.shadowCache.delete(first);
+    }
+  }
+
+  private touchShapeResources(shapeKey: string) {
+    const cached = this.shapeCache.get(shapeKey);
+    if (!cached) return null;
+    this.shapeCache.delete(shapeKey);
+    this.shapeCache.set(shapeKey, cached);
+    return cached;
+  }
+
+  private touchShadowResources(key: string) {
+    const cached = this.shadowCache.get(key);
+    if (!cached) return null;
+    this.shadowCache.delete(key);
+    this.shadowCache.set(key, cached);
+    return cached;
+  }
+
+  private shadowKey(shapeKey: string | undefined, u: Float32Array<ArrayBuffer>) {
+    if (!shapeKey) return null;
+    return [
+      shapeKey,
+      u[14], u[15],
+      u[20], u[21], u[22], u[23],
+      u[28], u[29], u[30],
+      u[32], u[33],
+      u[38], u[39],
+    ].join(":");
+  }
+
+  private buildShapeResources(shape: Uint8Array<ArrayBuffer>, size: number, u: Float32Array<ArrayBuffer>, key: string | null, enc: GPUCommandEncoder): ShapeResources {
+    const g = this.gpu, n = size, samp = g.sampler();
+    const persistent = key != null;
+    const uni = (step = 0, bx = 0, by = 0) => g.uniform(patch(u, step, bx, by));
+
+    const shapeTex = g.texture(n, n, F8, false, persistent);
+    g.upload(shapeTex, shape, n, n);
+
+    let seedSrc = g.texture(n, n, F16, true, persistent);
+    let seedDst = g.texture(n, n, F16, true, persistent);
+    g.pass(this.pl("jfa_seed", F16, ["U", "T"]), seedSrc, uni(), [shapeTex], undefined, enc);
+    const steps = Math.ceil(Math.log2(n));
+    let step = 1 << (steps - 1);
+    for (let i = 0; i < steps; i++) {
+      g.pass(this.pl("jfa_flood", F16, ["U", "T"]), seedDst, uni(step), [seedSrc], undefined, enc);
+      [seedSrc, seedDst] = [seedDst, seedSrc];
+      step = Math.max(1, step >> 1);
+    }
+    for (let i = 0; i < 2; i++) {
+      g.pass(this.pl("jfa_flood", F16, ["U", "T"]), seedDst, uni(1), [seedSrc], undefined, enc);
+      [seedSrc, seedDst] = [seedDst, seedSrc];
+    }
+
+    const sdfTex = g.texture(n, n, F16, true, persistent);
+    g.pass(this.pl("sdf_resolve", F16, ["U", "T", "T"]), sdfTex, uni(), [seedSrc, shapeTex], undefined, enc);
+
+    const sdfH = g.texture(n, n, F16, true);
+    g.pass(this.pl("sdf_blur", F16, ["U", "T", "S"]), sdfH, uni(0, 1, 0), [sdfTex], samp, enc);
+    const sdfS = g.texture(n, n, F16, true);
+    g.pass(this.pl("sdf_blur", F16, ["U", "T", "S"]), sdfS, uni(0, 0, 1), [sdfH], samp, enc);
+
+    const dgTex = g.texture(n, n, F16, true, persistent);
+    g.pass(this.pl("distance_gradient", F16, ["U", "T", "S"]), dgTex, uni(), [sdfS], samp, enc);
+
+    return { key, shapeTex, seedTex: seedSrc, sdfTex, dgTex, owned: [shapeTex, seedSrc, seedDst, sdfTex, dgTex] };
+  }
+
+  prepareShape(shape: Uint8Array<ArrayBuffer>, size: number, u: Float32Array<ArrayBuffer>, shapeKey: string) {
+    this.prepareShapes([{ shape, size, uniforms: u, shapeKey }]);
+  }
+
+  prepareShapes(items: ShapePrepare[]) {
+    const enc = this.gpu.commandEncoder();
+    let submitted = false;
+    try {
+      for (const item of items) {
+        if (this.touchShapeResources(item.shapeKey)) continue;
+        const resources = this.buildShapeResources(item.shape, item.size, item.uniforms, item.shapeKey, enc);
+        this.shapeCache.set(item.shapeKey, resources);
+        submitted = true;
+      }
+      if (submitted) {
+        this.gpu.submit(enc);
+        this.trimShapeCache();
+      }
+    } finally {
+      this.gpu.frameDone();
+    }
+  }
+
+  private shapeResources(shape: Uint8Array<ArrayBuffer>, size: number, u: Float32Array<ArrayBuffer>, enc: GPUCommandEncoder, shapeKey?: string): ShapeResources {
+    if (shapeKey) {
+      const cached = this.touchShapeResources(shapeKey);
+      if (cached) return cached;
+      const resources = this.buildShapeResources(shape, size, u, shapeKey, enc);
+      this.shapeCache.set(shapeKey, resources);
+      this.trimShapeCache();
+      return resources;
+    }
+    return this.buildShapeResources(shape, size, u, null, enc);
+  }
+
+  private shadowResources(shapeRes: ShapeResources, size: number, u: Float32Array<ArrayBuffer>, enc: GPUCommandEncoder, shapeKey?: string): Tex {
+    const key = this.shadowKey(shapeKey, u);
+    const cached = key ? this.touchShadowResources(key) : null;
+    if (cached) return cached.shadowTex;
+
     const g = this.gpu, n = size, samp = g.sampler();
     const uni = (step = 0, bx = 0, by = 0) => g.uniform(patch(u, step, bx, by));
+    const { shapeTex, seedTex, sdfTex } = shapeRes;
+    const persistent = key != null;
+
+    const shadowSrcTex = g.texture(n, n, F16, true);
+    g.pass(this.pl("shadow_source", F16, ["U", "T", "T", "T"]), shadowSrcTex, uni(), [seedTex, shapeTex, sdfTex], undefined, enc);
+    const shH = g.texture(n, n, F16, true);
+    g.pass(this.pl("shadow_blur", F16, ["U", "T", "S"]), shH, uni(0, 1, 0), [shadowSrcTex], samp, enc);
+    const shV = g.texture(n, n, F16, true);
+    g.pass(this.pl("shadow_blur", F16, ["U", "T", "S"]), shV, uni(0, 0, 1), [shH], samp, enc);
+    const shadowTex = g.texture(n, n, F16, true, persistent);
+    g.pass(this.pl("shadow", F16, ["U", "T", "S"]), shadowTex, uni(), [shV], samp, enc);
+
+    if (key) {
+      this.shadowCache.set(key, { key, shadowTex });
+      this.trimShadowCache();
+    }
+    return shadowTex;
+  }
+
+  /** Render one glass layer. shape/bg are RGBA8 (length size*size*4). Returns RGBA8 result. */
+  async render(shape: Uint8Array<ArrayBuffer>, bg: Uint8Array<ArrayBuffer>, size: number, u: Float32Array<ArrayBuffer>, shapeKey?: string): Promise<Uint8ClampedArray<ArrayBuffer>> {
+    const g = this.gpu, n = size, samp = g.sampler();
+    const uni = (step = 0, bx = 0, by = 0) => g.uniform(patch(u, step, bx, by));
+    const enc = g.commandEncoder();
     try {
-      const shapeTex = g.texture(n, n, F8, false); g.upload(shapeTex, shape, n, n);
+      const shapeRes = this.shapeResources(shape, n, u, enc, shapeKey);
+      const { shapeTex, dgTex } = shapeRes;
       const bgTex = g.texture(n, n, F8, false); g.upload(bgTex, bg, n, n);
-
-      // JFA -> normalised SDF
-      let seedSrc = g.texture(n, n, F16, true);
-      let seedDst = g.texture(n, n, F16, true);
-      g.pass(this.pl("jfa_seed", F16, ["U", "T"]), seedSrc, uni(), [shapeTex]);
-      const steps = Math.ceil(Math.log2(n));
-      let step = 1 << (steps - 1);
-      for (let i = 0; i < steps; i++) {
-        g.pass(this.pl("jfa_flood", F16, ["U", "T"]), seedDst, uni(step), [seedSrc]);
-        [seedSrc, seedDst] = [seedDst, seedSrc];
-        step = Math.max(1, step >> 1);
-      }
-      for (let i = 0; i < 2; i++) {
-        g.pass(this.pl("jfa_flood", F16, ["U", "T"]), seedDst, uni(1), [seedSrc]);
-        [seedSrc, seedDst] = [seedDst, seedSrc];
-      }
-      const sdf = g.texture(n, n, F16, true);
-      g.pass(this.pl("sdf_resolve", F16, ["U", "T", "T"]), sdf, uni(), [seedSrc, shapeTex]);
-
-      // smooth SDF (.r) for clean normals
-      const sdfH = g.texture(n, n, F16, true);
-      g.pass(this.pl("sdf_blur", F16, ["U", "T", "S"]), sdfH, uni(0, 1, 0), [sdf], samp);
-      const sdfS = g.texture(n, n, F16, true);
-      g.pass(this.pl("sdf_blur", F16, ["U", "T", "S"]), sdfS, uni(0, 0, 1), [sdfH], samp);
-
-      const dg = g.texture(n, n, F16, true);
-      g.pass(this.pl("distance_gradient", F16, ["U", "T", "S"]), dg, uni(), [sdfS], samp);
 
       // frosted background blur (no-op when blurRadius<=0)
       const bgH = g.texture(n, n, F8, true);
-      g.pass(this.pl("blur", F8, ["U", "T", "S"]), bgH, uni(0, 1, 0), [bgTex], samp);
+      g.pass(this.pl("blur", F8, ["U", "T", "S"]), bgH, uni(0, 1, 0), [bgTex], samp, enc);
       const bgBlur = g.texture(n, n, F8, true);
-      g.pass(this.pl("blur", F8, ["U", "T", "S"]), bgBlur, uni(0, 0, 1), [bgH], samp);
+      g.pass(this.pl("blur", F8, ["U", "T", "S"]), bgBlur, uni(0, 0, 1), [bgH], samp, enc);
 
-      // shadow = nearest-edge coloured coverage (layer-color), separable gaussian, then offset
-      const shadowSrcTex = g.texture(n, n, F16, true);
-      g.pass(this.pl("shadow_source", F16, ["U", "T", "T", "T"]), shadowSrcTex, uni(), [seedSrc, shapeTex, sdf]);
-      const shH = g.texture(n, n, F16, true);
-      g.pass(this.pl("shadow_blur", F16, ["U", "T", "S"]), shH, uni(0, 1, 0), [shadowSrcTex], samp);
-      const shV = g.texture(n, n, F16, true);
-      g.pass(this.pl("shadow_blur", F16, ["U", "T", "S"]), shV, uni(0, 0, 1), [shH], samp);
-      const shadowTex = g.texture(n, n, F16, true);
-      g.pass(this.pl("shadow", F16, ["U", "T", "S"]), shadowTex, uni(), [shV], samp);
+      const shadowTex = this.shadowResources(shapeRes, n, u, enc, shapeKey);
 
       const glass = g.texture(n, n, F16, true);
-      g.pass(this.pl("glass_background", F16, ["U", "T", "T", "S"]), glass, uni(), [dg, bgBlur], samp);
+      g.pass(this.pl("glass_background", F16, ["U", "T", "T", "S"]), glass, uni(), [dgTex, bgBlur], samp, enc);
       const color = g.texture(n, n, F16, true);
-      g.pass(this.pl("color_layer", F16, ["U", "T", "T", "S"]), color, uni(), [dg, shapeTex], samp);
+      g.pass(this.pl("color_layer", F16, ["U", "T", "T", "S"]), color, uni(), [dgTex, shapeTex], samp, enc);
       const highlight = g.texture(n, n, F16, true);
-      g.pass(this.pl("glass_highlight", F16, ["U", "T", "S"]), highlight, uni(), [dg], samp);
+      g.pass(this.pl("glass_highlight", F16, ["U", "T", "S"]), highlight, uni(), [dgTex], samp, enc);
 
       const out = g.texture(n, n, F8, true);
-      g.pass(this.pl("composite", F8, ["U", "T", "T", "T", "T", "S"]), out, uni(), [shadowTex, glass, color, highlight], samp);
+      g.pass(this.pl("composite", F8, ["U", "T", "T", "T", "T", "S"]), out, uni(), [shadowTex, glass, color, highlight], samp, enc);
 
-      return await g.readback(out, n, n);
+      return await g.readback(out, n, n, enc);
     } finally {
       g.frameDone();
     }

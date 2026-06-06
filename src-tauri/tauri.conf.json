@@ -18,12 +18,8 @@
         "minWidth": 900,
         "minHeight": 600,
         "decorations": false,
-        "transparent": true,
-        "backgroundColor": "#00000000",
-        "windowEffects": {
-          "effects": ["acrylic"],
-          "color": "#00000000"
-        },
+        "transparent": false,
+        "backgroundColor": "#ffffff",
         "shadow": true
       }
     ],

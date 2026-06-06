@@ -1,22 +1,16 @@
-import { useRef, useState, useEffect, useCallback, type ReactNode } from "react";
-import { Clipboard, Copy, FolderPlus, ImagePlus, Plus, RotateCcw, RotateCw, Trash2 } from "lucide-react";
+import { useRef, useState, useEffect, useCallback, type CSSProperties } from "react";
+import { ImagePlus } from "lucide-react";
 import { Hierarchy } from "./ui/Hierarchy";
 import { Preview } from "./ui/Preview";
 import { Inspector } from "./ui/Inspector";
 import { WindowChrome, detectChromePlatform } from "./ui/WindowChrome";
-import { NativeTooltipProvider } from "./ui/nativePopover";
+import { NativeTooltipProvider, openNativeContextMenu, type NativeContextMenuItem } from "./ui/nativePopover";
 import { ICON_ID, useStore } from "./state/store";
 import { addGroup, addLayer } from "./model/document";
 import { backdropCss, isDarkBackdrop } from "./render/backdrop";
 
 type ImportAsset = { name: string; dataUrl: string };
-type ContextMenuState = { x: number; y: number; targetId: number };
-type ContextMenuItem = {
-  label: string;
-  icon: ReactNode;
-  disabled?: boolean;
-  danger?: boolean;
-  separatorBefore?: boolean;
+type ContextMenuAction = NativeContextMenuItem & {
   onSelect: () => void;
 };
 
@@ -83,10 +77,12 @@ export function App() {
   const bgKind = useStore((s) => s.bgKind);
   const bgColor = useStore((s) => s.bgColor);
   const bgImage = useStore((s) => s.bgImage);
-  const sceneUrl = useStore((s) => s.sceneUrl);
+  const previewCanvas = useStore((s) => s.previewCanvas);
+  const viewW = useStore((s) => s.viewW);
+  const viewH = useStore((s) => s.viewH);
+  const zoom = useStore((s) => s.zoom);
   const setViewport = useStore((s) => s.setViewport);
   const [dragging, setDragging] = useState(false);
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const depth = useRef(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const platform = detectChromePlatform();
@@ -95,8 +91,6 @@ export function App() {
     setDragging(false);
   }, []);
 
-  // the whole window is ONE scene canvas (backdrop + centred icon), so changing the background
-  // re-renders everything together instead of leaving the icon lagging behind a CSS backdrop.
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
@@ -199,6 +193,15 @@ export function App() {
   }, [copySelected, deleteSelected, importAssets, pasteCopied, redo, undo]);
 
   useEffect(() => {
+    const actionsFor = (targetId: number): ContextMenuAction[] => [
+      { id: "add-part", label: "Add Part", onSelect: () => update(addLayer) },
+      { id: "add-group", label: "Add Group", onSelect: () => update(addGroup) },
+      { id: "copy", label: "Copy", disabled: targetId === ICON_ID, separatorBefore: true, onSelect: copySelected },
+      { id: "paste", label: "Paste", disabled: !hasMemberClipboard, onSelect: pasteCopied },
+      { id: "delete", label: "Delete", disabled: targetId === ICON_ID, danger: true, onSelect: deleteSelected },
+      { id: "undo", label: "Undo", disabled: pastCount === 0, separatorBefore: true, onSelect: undo },
+      { id: "redo", label: "Redo", disabled: futureCount === 0, onSelect: redo },
+    ];
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
       const row = e.target instanceof Element
@@ -207,35 +210,37 @@ export function App() {
       const rowId = row ? Number(row.dataset.hierarchyRowId) : NaN;
       const targetId = Number.isFinite(rowId) ? rowId : selectedId;
       if (Number.isFinite(rowId)) select(rowId);
-      setContextMenu({ x: e.clientX, y: e.clientY, targetId });
+      const actions = actionsFor(targetId);
+      void openNativeContextMenu(e.clientX, e.clientY, actions.map((item) => ({
+        id: item.id,
+        label: item.label,
+        disabled: item.disabled,
+        danger: item.danger,
+        separatorBefore: item.separatorBefore,
+      }))).then((picked) => {
+        const action = actions.find((item) => item.id === picked);
+        if (!action || action.disabled) return;
+        action.onSelect();
+      });
     };
     document.addEventListener("contextmenu", onContextMenu);
     return () => document.removeEventListener("contextmenu", onContextMenu);
-  }, [select, selectedId]);
-
-  useEffect(() => {
-    if (!contextMenu) return;
-    const close = () => setContextMenu(null);
-    const onPointerDown = (e: PointerEvent) => {
-      if (e.target instanceof Element && e.target.closest(".context-menu-popover")) return;
-      close();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    window.addEventListener("resize", close);
-    window.addEventListener("scroll", close, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("scroll", close, true);
-    };
-  }, [contextMenu]);
+  }, [copySelected, deleteSelected, futureCount, hasMemberClipboard, pasteCopied, pastCount, redo, select, selectedId, undo, update]);
 
   const spec = { kind: bgKind, color: bgColor, image: bgImage };
+  const iconCssSize = previewCssSize(viewW, viewH, zoom);
+  const previewLeft = 230;
+  const previewRight = 300;
+  const previewTop = 44;
+  const previewBottom = 92;
+  const previewW = Math.max(120, viewW - previewLeft - previewRight);
+  const previewH = Math.max(120, viewH - previewTop - previewBottom);
+  const previewIconStyle: CSSProperties = {
+    width: iconCssSize,
+    height: iconCssSize,
+    left: previewLeft + previewW / 2 - iconCssSize / 2,
+    top: previewTop + previewH / 2 - iconCssSize / 2,
+  };
   // only handle OS file drags here; internal hierarchy drag-reorder is left to the rows.
   const isFiles = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
   const onDrop = async (e: React.DragEvent) => {
@@ -246,21 +251,6 @@ export function App() {
     if (!files.length) return;
     await importAssets(await Promise.all(files.map((f) => readAsDataUrl(f))));
   };
-  const menuTargetId = contextMenu?.targetId ?? selectedId;
-  const contextItems: ContextMenuItem[] = [
-    { label: "Add Part", icon: <Plus size={14} />, onSelect: () => update(addLayer) },
-    { label: "Add Group", icon: <FolderPlus size={14} />, onSelect: () => update(addGroup) },
-    { label: "Copy", icon: <Copy size={14} />, disabled: menuTargetId === ICON_ID, separatorBefore: true, onSelect: copySelected },
-    { label: "Paste", icon: <Clipboard size={14} />, disabled: !hasMemberClipboard, onSelect: pasteCopied },
-    { label: "Delete", icon: <Trash2 size={14} />, disabled: menuTargetId === ICON_ID, danger: true, onSelect: deleteSelected },
-    { label: "Undo", icon: <RotateCcw size={14} />, disabled: pastCount === 0, separatorBefore: true, onSelect: undo },
-    { label: "Redo", icon: <RotateCw size={14} />, disabled: futureCount === 0, onSelect: redo },
-  ];
-  const runContextAction = (item: ContextMenuItem) => {
-    if (item.disabled) return;
-    setContextMenu(null);
-    item.onSelect();
-  };
 
   return (
     <div ref={rootRef} className={`h-full w-full flex overflow-hidden relative ${isDarkBackdrop(spec) ? "ui-dark" : ""}`}
@@ -269,21 +259,12 @@ export function App() {
       onDragOver={(e) => { if (isFiles(e)) e.preventDefault(); }}
       onDragLeave={(e) => { if (!isFiles(e)) return; depth.current--; if (depth.current <= 0) setDragging(false); }}
       onDrop={onDrop}>
-      {/* full-window scene canvas (backdrop + icon) behind the transparent panels */}
-      {sceneUrl && <img src={sceneUrl} alt="" draggable={false} className="absolute inset-0 w-full h-full z-0 select-none pointer-events-none" />}
+      {previewCanvas && <PreviewCanvas source={previewCanvas} style={previewIconStyle} />}
       <NativeTooltipProvider />
       <WindowChrome platform={platform} />
       <Hierarchy chromePlatform={platform} />
       <Preview chromePlatform={platform} />
       <Inspector chromePlatform={platform} />
-      {contextMenu && (
-        <ContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          items={contextItems}
-          onSelect={runContextAction}
-        />
-      )}
       {dragging && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-accent/10 backdrop-blur-[2px] pointer-events-none">
           <div className="px-6 py-4 rounded-2xl bg-[color:var(--popover)] shadow-xl border-2 border-dashed border-accent text-[15px] font-medium text-accent flex items-center gap-2">
@@ -295,32 +276,32 @@ export function App() {
   );
 }
 
-function ContextMenu({ x, y, items, onSelect }: { x: number; y: number; items: ContextMenuItem[]; onSelect: (item: ContextMenuItem) => void }) {
-  const width = 184;
-  const height = items.length * 28 + items.filter((item) => item.separatorBefore).length * 7 + 10;
-  const left = Math.max(8, Math.min(x, window.innerWidth - width - 8));
-  const top = Math.max(8, Math.min(y, window.innerHeight - height - 8));
+const previewCssSize = (viewW: number, viewH: number, zoom: number) =>
+  Math.min(Math.max(120, viewW - 530), Math.max(120, viewH - 136)) *
+  0.62 *
+  Math.min(2.5, Math.max(0.4, zoom));
+
+function PreviewCanvas({ source, style }: { source: HTMLCanvasElement; style: CSSProperties }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.width = source.width;
+    canvas.height = source.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(source, 0, 0);
+  }, [source]);
+
   return (
-    <div
-      className="context-menu-popover"
-      style={{ left, top, width }}
-      onContextMenu={(e) => e.preventDefault()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      {items.map((item) => (
-        <div key={item.label}>
-          {item.separatorBefore && <div className="context-menu-separator" />}
-          <button
-            type="button"
-            disabled={item.disabled}
-            className={`context-menu-item ${item.danger ? "context-menu-item-danger" : ""}`}
-            onClick={() => onSelect(item)}
-          >
-            <span className="context-menu-icon">{item.icon}</span>
-            <span className="truncate">{item.label}</span>
-          </button>
-        </div>
-      ))}
-    </div>
+    <canvas
+      ref={canvasRef}
+      width={source.width}
+      height={source.height}
+      className="absolute z-0 select-none pointer-events-none"
+      style={style}
+    />
   );
 }

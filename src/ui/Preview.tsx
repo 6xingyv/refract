@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { Grid3x3, ChevronUp, ChevronDown, FolderOpen, Save, Download } from "lucide-react";
 import { useStore } from "../state/store";
 import type { Rendition, Platform, Appearance } from "../model/types";
@@ -13,7 +13,8 @@ const SQUARE_PLATS: Platform[] = ["iOS", "macOS"];
 
 export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: ChromePlatform }) {
   const doc = useStore((s) => s.doc);
-  const sceneUrl = useStore((s) => s.sceneUrl);
+  const previewCanvas = useStore((s) => s.previewCanvas);
+  const lightAngleDeg = useStore((s) => s.lightAngleDeg);
   const viewW = useStore((s) => s.viewW);
   const viewH = useStore((s) => s.viewH);
   const variants = useStore((s) => s.variants);
@@ -21,6 +22,7 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
   const zoom = useStore((s) => s.zoom);
   const setZoom = useStore((s) => s.setZoom);
   const update = useStore((s) => s.update);
+  const setLightAngle = useStore((s) => s.setLightAngle);
   const rendering = useStore((s) => s.rendering);
   const error = useStore((s) => s.error);
   const openIcon = useStore((s) => s.openIcon);
@@ -106,8 +108,8 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
 
         {/* light angle */}
         <LightAngleControl
-          value={doc.lightAngleDeg}
-          onChange={(angle) => update((d) => ({ ...d, lightAngleDeg: angle }))}
+          value={lightAngleDeg}
+          onChange={setLightAngle}
         />
 
         {/* zoom */}
@@ -120,14 +122,12 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
         </div>
       </div>
 
-      {/* icon area (the icon itself lives in the scene canvas behind); grid + status overlay it */}
+      {/* icon area */}
       <div className="flex-1 flex items-center justify-center min-h-0 relative z-10 pointer-events-none">
-        {showGrid && (
-          <div className="relative" style={{ width: gridPx, height: gridPx }}>
-            <GridGuide src={PLATFORMS[doc.previewPlatform].circle ? gridCircle : gridSquare} dark={darkBackdrop} />
-          </div>
-        )}
-        {!sceneUrl && <span className="absolute text-sm text-[color:var(--tx-3)]">{rendering ? "rendering…" : ""}</span>}
+        <div className="relative" style={{ width: gridPx, height: gridPx }}>
+          {showGrid && <GridGuide src={PLATFORMS[doc.previewPlatform].circle ? gridCircle : gridSquare} dark={darkBackdrop} />}
+        </div>
+        {!previewCanvas && <span className="absolute text-sm text-[color:var(--tx-3)]">{rendering ? "rendering..." : ""}</span>}
       </div>
 
       {/* bottom bar: platforms (left) <-> appearances (right) */}
@@ -174,7 +174,7 @@ const GridIcon = () => <Grid3x3 size={14} strokeWidth={1.6} />;
 
 function LightAngleControl({ value, onChange }: { value: number; onChange: (angle: number) => void }) {
   const dialRef = useRef<HTMLButtonElement>(null);
-  const [dragging, setDragging] = useState(false);
+  const draggingRef = useRef(false);
   const angle = normalizeAngle(value);
   const dotX = 50 + 34 * Math.cos((angle * Math.PI) / 180);
   const dotY = 50 + 34 * Math.sin((angle * Math.PI) / 180);
@@ -197,17 +197,17 @@ function LightAngleControl({ value, onChange }: { value: number; onChange: (angl
         onPointerDown={(e) => {
           e.preventDefault();
           e.currentTarget.setPointerCapture(e.pointerId);
-          setDragging(true);
+          draggingRef.current = true;
           updateFromPoint(e.clientX, e.clientY);
         }}
         onPointerMove={(e) => {
-          if (dragging) updateFromPoint(e.clientX, e.clientY);
+          if (draggingRef.current) updateFromPoint(e.clientX, e.clientY);
         }}
         onPointerUp={(e) => {
-          setDragging(false);
+          draggingRef.current = false;
           if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
         }}
-        onPointerCancel={() => setDragging(false)}
+        onPointerCancel={() => { draggingRef.current = false; }}
       >
         <span
           className="absolute w-[4px] h-[4px] rounded-full bg-[color:var(--tx)]"

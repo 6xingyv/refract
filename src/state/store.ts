@@ -4,6 +4,7 @@ import { allLayers, slotOf, renditionOf } from "../model/types";
 
 const VARIANTS: Rendition[] = ["Default", "Dark", "Mono"];
 const PLATFORM_VARIANTS: Platform[] = ["iOS", "macOS", "watchOS"];
+const FIXED_RENDER_LIGHT_ANGLE = 45;
 import {
   sampleDocument,
   ICON_ID,
@@ -71,8 +72,8 @@ export type BgKind = "color" | "image";
 interface State {
   doc: IconDocument;
   selectedId: number;
-  previewUrl: string | null;
-  sceneUrl: string | null;
+  lightAngleDeg: number;
+  previewCanvas: HTMLCanvasElement | null;
   viewW: number;
   viewH: number;
   variants: { id: Rendition; url: string }[];
@@ -97,6 +98,7 @@ interface State {
   deleteSelected: () => void;
   copySelected: () => boolean;
   pasteCopied: () => boolean;
+  setLightAngle: (angle: number) => void;
   setZoom: (z: number) => void;
   setViewport: (w: number, h: number) => void;
   setAppearance: (a: Appearance) => void;
@@ -113,56 +115,117 @@ interface State {
   exportPng: () => Promise<void>;
 }
 
-let renderTimer: number | undefined;
+type RenderScope = "preview" | "all";
+let previewRenderTimer: number | undefined;
+let derivedRenderTimer: number | undefined;
+let previewRenderRequest = 0;
+let derivedRenderRequest = 0;
+let previewRenderRunning = false;
+let previewRenderRerun = false;
+
+const previewCssSize = (viewW: number, viewH: number, zoom: number) =>
+  Math.min(Math.max(120, viewW - 530), Math.max(120, viewH - 136)) *
+  0.62 *
+  Math.min(2.5, Math.max(0.4, zoom));
+
+const previewRenderSize = (viewW: number, viewH: number, zoom: number) => {
+  const scale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  return Math.max(48, Math.min(1400, Math.round(previewCssSize(viewW, viewH, zoom) * scale)));
+};
 
 export const useStore = create<State>((set, get) => {
-  const scheduleRender = () => {
-    window.clearTimeout(renderTimer);
-    renderTimer = window.setTimeout(async () => {
-      await ensureCompositor((e) => set({ error: e }));
-      if (!compositor) return;
-      set({ rendering: true });
-      try {
-        const doc = get().doc;
-        const ap = get().appearance;
-        const slot = slotOf(ap);
-        const docA = { ...doc, previewRendition: renditionOf(ap) };
-        const backdrop = { kind: get().bgKind, color: get().bgColor, image: get().bgImage };
-        const { viewW, viewH } = get();
-        if (viewW > 0 && viewH > 0) {
-          // one full-pane scene canvas: backdrop + centred icon (no separate CSS backdrop to lag)
-          const scene = await compositor.renderScene(docA, viewW, viewH, slot, backdrop, get().zoom);
-          set({ sceneUrl: scene.toDataURL("image/png"), rendering: false });
-        } else {
-          const canvas = await compositor.render(docA, 512, slot, backdrop);
-          set({ previewUrl: canvas.toDataURL("image/png"), rendering: false });
-        }
-        // appearance-variant thumbnails (right of the bottom strip): each rendition at its natural slot
-        const vs: { id: Rendition; url: string }[] = [];
-        for (const r of VARIANTS) {
-          try { const c = await compositor.render({ ...doc, previewRendition: r }, 96, undefined, backdrop); vs.push({ id: r, url: c.toDataURL("image/png") }); } catch {}
-        }
-        set({ variants: vs });
-        // platform-variant thumbnails (left of the bottom strip), at the current appearance
-        const pvs: { id: Platform; url: string }[] = [];
-        for (const p of PLATFORM_VARIANTS) {
-          try { const c = await compositor.render({ ...docA, previewPlatform: p }, 96, slot, backdrop); pvs.push({ id: p, url: c.toDataURL("image/png") }); } catch {}
-        }
-        set({ platformVariants: pvs });
-        // per-layer thumbnails for the hierarchy
-        const thumbs: Record<number, string> = {};
-        for (const g of doc.composition.groups) for (const l of g.layers) {
-          try { thumbs[l.id] = compositor.renderLayerThumb(l, 44).toDataURL("image/png"); } catch {}
-        }
-        set({ layerThumbs: thumbs });
-      } catch (e: any) {
-        set({ error: String(e?.message ?? e), rendering: false });
+  const renderPreview = async (request: number) => {
+    await ensureCompositor((e) => set({ error: e }));
+    if (!compositor || request !== previewRenderRequest) return;
+    set({ rendering: true });
+    try {
+      const doc = get().doc;
+      const ap = get().appearance;
+      const slot = slotOf(ap);
+      const docA = { ...doc, previewRendition: renditionOf(ap), lightAngleDeg: get().lightAngleDeg };
+      const backdrop = { kind: get().bgKind, color: get().bgColor, image: get().bgImage };
+      const { viewW, viewH } = get();
+      const size = viewW > 0 && viewH > 0 ? previewRenderSize(viewW, viewH, get().zoom) : 512;
+      const canvas = await compositor.render(docA, size, slot, backdrop);
+      if (request !== previewRenderRequest) return;
+      set({ previewCanvas: canvas, rendering: false });
+    } catch (e: any) {
+      if (request === previewRenderRequest) set({ error: String(e?.message ?? e), rendering: false });
+    }
+  };
+
+  const renderDerived = async (request: number) => {
+    await ensureCompositor((e) => set({ error: e }));
+    if (!compositor || request !== derivedRenderRequest) return;
+    try {
+      const doc = { ...get().doc, lightAngleDeg: FIXED_RENDER_LIGHT_ANGLE };
+      const ap = get().appearance;
+      const slot = slotOf(ap);
+      const docA = { ...doc, previewRendition: renditionOf(ap) };
+      const backdrop = { kind: get().bgKind, color: get().bgColor, image: get().bgImage };
+
+      const vs: { id: Rendition; url: string }[] = [];
+      for (const r of VARIANTS) {
+        if (request !== derivedRenderRequest) return;
+        try { const c = await compositor.render({ ...doc, previewRendition: r }, 96, undefined, backdrop); vs.push({ id: r, url: c.toDataURL("image/png") }); } catch {}
       }
-    }, 60);
+      if (request === derivedRenderRequest) set({ variants: vs });
+
+      const pvs: { id: Platform; url: string }[] = [];
+      for (const p of PLATFORM_VARIANTS) {
+        if (request !== derivedRenderRequest) return;
+        try { const c = await compositor.render({ ...docA, previewPlatform: p }, 96, slot, backdrop); pvs.push({ id: p, url: c.toDataURL("image/png") }); } catch {}
+      }
+      if (request === derivedRenderRequest) set({ platformVariants: pvs });
+
+      const thumbs: Record<number, string> = {};
+      for (const g of doc.composition.groups) for (const l of g.layers) {
+        if (request !== derivedRenderRequest) return;
+        try { thumbs[l.id] = compositor.renderLayerThumb(l, 44).toDataURL("image/png"); } catch {}
+      }
+      if (request === derivedRenderRequest) set({ layerThumbs: thumbs });
+    } catch (e: any) {
+      if (request === derivedRenderRequest) set({ error: String(e?.message ?? e) });
+    }
+  };
+
+  const startPreviewRender = async () => {
+    if (previewRenderRunning) {
+      previewRenderRerun = true;
+      return;
+    }
+    previewRenderRunning = true;
+    try {
+      do {
+        previewRenderRerun = false;
+        await renderPreview(++previewRenderRequest);
+      } while (previewRenderRerun);
+    } finally {
+      previewRenderRunning = false;
+    }
+  };
+
+  const schedulePreviewRender = (delay = 50) => {
+    if (previewRenderTimer !== undefined) return;
+    previewRenderTimer = window.setTimeout(() => {
+      previewRenderTimer = undefined;
+      void startPreviewRender();
+    }, delay);
+  };
+
+  const scheduleDerivedRender = (delay = 180) => {
+    window.clearTimeout(derivedRenderTimer);
+    const request = ++derivedRenderRequest;
+    derivedRenderTimer = window.setTimeout(() => void renderDerived(request), delay);
+  };
+
+  const scheduleRender = (scope: RenderScope = "all") => {
+    schedulePreviewRender(scope === "preview" ? 16 : 50);
+    if (scope === "all") scheduleDerivedRender();
   };
 
   // initial render
-  queueMicrotask(scheduleRender);
+  queueMicrotask(() => scheduleRender("all"));
 
   const commitDoc = (doc: IconDocument, selectedId = get().selectedId) => {
     const current = get();
@@ -179,15 +242,17 @@ export const useStore = create<State>((set, get) => {
 
   const resetDoc = (doc: IconDocument, selectedId = ICON_ID) => {
     memberClipboard = null;
-    set({ doc, selectedId, past: [], future: [], hasMemberClipboard: false });
+    set({ doc, selectedId, lightAngleDeg: doc.lightAngleDeg, past: [], future: [], hasMemberClipboard: false });
     scheduleRender();
   };
 
+  const initialDoc = sampleDocument();
+
   return {
-    doc: sampleDocument(),
+    doc: initialDoc,
     selectedId: ICON_ID,
-    previewUrl: null,
-    sceneUrl: null,
+    lightAngleDeg: initialDoc.lightAngleDeg,
+    previewCanvas: null,
     viewW: 1100,
     viewH: 720,
     variants: [],
@@ -247,8 +312,13 @@ export const useStore = create<State>((set, get) => {
       commitDoc(pasted.doc, pasted.selectedId);
       return true;
     },
-    setZoom: (z) => { set({ zoom: Math.max(0.25, Math.min(4, z)) }); scheduleRender(); },
-    setViewport: (w, h) => { if (w === get().viewW && h === get().viewH) return; set({ viewW: w, viewH: h }); scheduleRender(); },
+    setLightAngle: (angle) => {
+      if (get().lightAngleDeg === angle) return;
+      set({ lightAngleDeg: angle });
+      scheduleRender("preview");
+    },
+    setZoom: (z) => { set({ zoom: Math.max(0.25, Math.min(4, z)) }); scheduleRender("preview"); },
+    setViewport: (w, h) => { if (w === get().viewW && h === get().viewH) return; set({ viewW: w, viewH: h }); scheduleRender("preview"); },
     setAppearance: (a) => { set({ appearance: a, doc: { ...get().doc, previewRendition: renditionOf(a) } }); scheduleRender(); },
     setPreviewBgDark: (v) => set({ previewBgDark: v }),
     setBg: (p) => { set(p as any); scheduleRender(); }, // backdrop feeds the glass refraction -> re-render
@@ -333,7 +403,7 @@ export const useStore = create<State>((set, get) => {
       const doc = get().doc;
       const ap = get().appearance;
       const slot = slotOf(ap);
-      const base = { ...doc, previewRendition: renditionOf(ap) };
+        const base = { ...doc, previewRendition: renditionOf(ap), lightAngleDeg: FIXED_RENDER_LIGHT_ANGLE };
       try {
         const files: { name: string; data: string }[] = [];
         for (const p of doc.supportedPlatforms) {
