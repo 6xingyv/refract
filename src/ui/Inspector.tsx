@@ -178,7 +178,9 @@ function Layout({ pos, scale, onPos, onScale }: { pos: { x: number; y: number };
         <ValueChip value={Math.round(pos.x)} unit="pt" onChange={(n) => onPos({ ...pos, x: n })} />
         <ValueChip value={Math.round(pos.y)} unit="pt" onChange={(n) => onPos({ ...pos, y: n })} />
       </Row>
-      <div className="flex justify-end"><Pct value={scale} onChange={onScale} /></div>
+      <div className="flex justify-end">
+        <ValueChip value={Math.round(scale * 100)} unit="%" onChange={(n) => onScale(Math.max(0, n) / 100)} />
+      </div>
     </div>
   );
 }

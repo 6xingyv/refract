@@ -4,12 +4,13 @@ import { currentMonitor, Effect, EffectState, getCurrentWindow, LogicalPosition,
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 type Placement = "bottom-start" | "bottom-end" | "bottom" | "top-start" | "top-end" | "top";
-type PopoverKind = "dropdown" | "tooltip" | "wallpaper";
+type PopoverKind = "dropdown" | "tooltip" | "wallpaper" | "color";
 
 export type PopupPayload =
   | { kind: "dropdown"; sourceId: string; value: string; options: string[]; variant: "chip" | "plain"; dark: boolean }
   | { kind: "tooltip"; sourceId: string; text: string; dark: boolean }
-  | { kind: "wallpaper"; sourceId: string; selected: number; presets: string[]; dark: boolean };
+  | { kind: "wallpaper"; sourceId: string; selected: number; presets: string[]; dark: boolean }
+  | { kind: "color"; sourceId: string; value: string; dark: boolean };
 
 type PopupResult = { sourceId: string; value?: string | number; cancelled?: boolean };
 type PopupReady = { label: string };
@@ -22,7 +23,7 @@ type PopupSlot = {
 };
 
 const EDGE = 8;
-const POPUP_KINDS: PopoverKind[] = ["tooltip", "dropdown", "wallpaper"];
+const POPUP_KINDS: PopoverKind[] = ["tooltip", "dropdown", "wallpaper", "color"];
 let serial = 0;
 let eventReady: Promise<void> | null = null;
 let readyEventReady: Promise<void> | null = null;
@@ -39,11 +40,11 @@ const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(ma
 
 function sourceId(kind: PopoverKind) {
   serial += 1;
-  return `ictool-popover-${kind}-${Date.now()}-${serial}`;
+  return `refract-popover-${kind}-${Date.now()}-${serial}`;
 }
 
 function slotLabel(kind: PopoverKind) {
-  return `ictool-popover-${kind}`;
+  return `refract-popover-${kind}`;
 }
 
 function payloadEvent(kind: PopoverKind) {
@@ -93,6 +94,9 @@ function sizeFor(payload: PopupPayload, anchorWidth: number) {
   if (payload.kind === "wallpaper") {
     const rows = Math.ceil(payload.presets.length / 2);
     return { width: 156, height: rows * 54 + 20 + Math.max(0, rows - 1) * 8 };
+  }
+  if (payload.kind === "color") {
+    return { width: 220, height: 238 };
   }
   const maxLabel = payload.options.reduce((n, o) => Math.max(n, o.length), 0);
   return {
@@ -179,7 +183,11 @@ async function ensurePopoverSlot(kind: PopoverKind) {
     readyResolvers.set(label, finishReady);
   });
 
-  const existing = await WebviewWindow.getByLabel(label).catch(() => null);
+  let existing = await WebviewWindow.getByLabel(label).catch(() => null);
+  if (existing && kind === "color") {
+    await existing.destroy().catch(() => {});
+    existing = null;
+  }
   const parent = getCurrentWindow();
   const win = existing ?? new WebviewWindow(label, {
     alwaysOnTop: true,
@@ -250,7 +258,7 @@ export async function closeNativePopover(id: string) {
 }
 
 function closeNativePopoversByKind(kind: PopoverKind) {
-  const prefix = `ictool-popover-${kind}-`;
+  const prefix = `refract-popover-${kind}-`;
   return Promise.all([...windows.keys()].filter((id) => id.startsWith(prefix)).map(closeNativePopover));
 }
 
@@ -312,6 +320,15 @@ export async function openNativeWallpaper(anchor: HTMLElement, presets: string[]
   return new Promise<number | null>((resolve) => pending.set(id, (v) => resolve(typeof v === "number" ? v : null)));
 }
 
+export async function openNativeColorPicker(anchor: HTMLElement, value: string) {
+  await closeNativePopoversByKind("tooltip");
+  const id = sourceId("color");
+  const dark = document.documentElement.classList.contains("ui-dark") || document.querySelector(".ui-dark") != null;
+  const win = await openNativePopover(anchor, { kind: "color", sourceId: id, value, dark }, "bottom-end");
+  if (!win) return null;
+  return new Promise<string | null>((resolve) => pending.set(id, (v) => resolve(typeof v === "string" ? v : null)));
+}
+
 export function NativeTooltipProvider() {
   const active = React.useRef<{ id: string; anchor: HTMLElement; ticket: number } | null>(null);
   const ticket = React.useRef(0);
@@ -363,7 +380,7 @@ export function NativeTooltipProvider() {
         if (Date.now() < suppressBlurUntil) return;
         void TauriWindow.getFocusedWindow().then((focusedWindow) => {
           const focusedLabel = focusedWindow?.label ?? "";
-          if (focusedLabel.startsWith("ictool-popover-")) return;
+          if (focusedLabel.startsWith("refract-popover-")) return;
           hideAll();
         }).catch(hideAll);
       }, 0);
@@ -394,10 +411,103 @@ export function NativeTooltipProvider() {
   return null;
 }
 
+type Rgb = { r: number; g: number; b: number };
+type Hsv = { h: number; s: number; v: number };
+
+function hexToRgb(hex: string): Rgb {
+  const clean = hex.replace("#", "").trim();
+  const full = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean;
+  const n = /^[0-9a-f]{6}$/i.test(full) ? parseInt(full, 16) : 0xffffff;
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function rgbToHex({ r, g, b }: Rgb) {
+  return `#${[r, g, b].map((n) => Math.round(clamp(n, 0, 255)).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function rgbToHsv({ r, g, b }: Rgb): Hsv {
+  const rn = r / 255, gn = g / 255, bn = b / 255;
+  const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === rn) h = ((gn - bn) / d) % 6;
+    else if (max === gn) h = (bn - rn) / d + 2;
+    else h = (rn - gn) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s: max === 0 ? 0 : d / max, v: max };
+}
+
+function hsvToRgb({ h, s, v }: Hsv): Rgb {
+  const c = v * s;
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = v - c;
+  let rp = 0, gp = 0, bp = 0;
+  if (h < 60) [rp, gp, bp] = [c, x, 0];
+  else if (h < 120) [rp, gp, bp] = [x, c, 0];
+  else if (h < 180) [rp, gp, bp] = [0, c, x];
+  else if (h < 240) [rp, gp, bp] = [0, x, c];
+  else if (h < 300) [rp, gp, bp] = [x, 0, c];
+  else [rp, gp, bp] = [c, 0, x];
+  return { r: (rp + m) * 255, g: (gp + m) * 255, b: (bp + m) * 255 };
+}
+
+function NativeColorPicker({ value, send }: { value: string; send: (value?: string | number) => Promise<void> }) {
+  const [hsv, setHsv] = React.useState(() => rgbToHsv(hexToRgb(value)));
+  const hex = rgbToHex(hsvToRgb(hsv));
+  const hue = `hsl(${hsv.h}, 100%, 50%)`;
+
+  const updateSv = (e: React.PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setHsv((c) => ({
+      ...c,
+      s: clamp((e.clientX - rect.left) / rect.width, 0, 1),
+      v: 1 - clamp((e.clientY - rect.top) / rect.height, 0, 1),
+    }));
+  };
+  const updateHue = (e: React.PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setHsv((c) => ({ ...c, h: clamp((e.clientX - rect.left) / rect.width, 0, 1) * 360 }));
+  };
+
+  return (
+    <div className="native-color-window">
+      <div
+        className="native-color-sv"
+        style={{ background: `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, ${hue})` }}
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          updateSv(e);
+        }}
+        onPointerMove={(e) => { if (e.buttons === 1) updateSv(e); }}
+      >
+        <span className="native-color-sv-thumb" style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%` }} />
+      </div>
+      <div
+        className="native-color-hue"
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          updateHue(e);
+        }}
+        onPointerMove={(e) => { if (e.buttons === 1) updateHue(e); }}
+      >
+        <span className="native-color-hue-thumb" style={{ left: `${(hsv.h / 360) * 100}%` }} />
+      </div>
+      <div className="native-color-footer">
+        <span className="native-color-swatch" style={{ background: hex }} />
+        <span className="native-color-hex">{hex.toUpperCase()}</span>
+        <button className="native-color-button" onClick={() => void send(hex)}>Done</button>
+      </div>
+    </div>
+  );
+}
+
 export function PopupWindow() {
   const popupKind = React.useMemo<PopoverKind | null>(() => {
     const raw = new URLSearchParams(window.location.search).get("popup-kind");
-    return raw === "tooltip" || raw === "dropdown" || raw === "wallpaper" ? raw : null;
+    return raw === "tooltip" || raw === "dropdown" || raw === "wallpaper" || raw === "color" ? raw : null;
   }, []);
   const [payload, setPayload] = React.useState<PopupPayload | null>(() => {
     const raw = new URLSearchParams(window.location.search).get("data");
@@ -440,6 +550,9 @@ export function PopupWindow() {
   if (!payload) return null;
   if (payload.kind === "tooltip") {
     return <div className="native-tooltip-window">{payload.text}</div>;
+  }
+  if (payload.kind === "color") {
+    return <NativeColorPicker value={payload.value} send={send} />;
   }
   if (payload.kind === "wallpaper") {
     return (

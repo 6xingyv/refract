@@ -197,6 +197,88 @@ body,
   box-shadow: inset 0 0 0 1px var(--line);
 }
 
+.native-color-window {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100vw;
+  height: 100vh;
+  padding: 10px;
+  background: var(--popover-window);
+}
+
+.native-color-sv {
+  position: relative;
+  height: 142px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--line);
+  cursor: crosshair;
+}
+
+.native-color-sv-thumb,
+.native-color-hue-thumb {
+  position: absolute;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+.native-color-sv-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 9999px;
+}
+
+.native-color-hue {
+  position: relative;
+  height: 14px;
+  border-radius: 9999px;
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+  box-shadow: inset 0 0 0 1px var(--line);
+  cursor: ew-resize;
+}
+
+.native-color-hue-thumb {
+  top: 50%;
+  width: 8px;
+  height: 20px;
+  border-radius: 9999px;
+}
+
+.native-color-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.native-color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.native-color-hex {
+  flex: 1;
+  color: var(--tx-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.native-color-button {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: var(--control-active);
+  color: var(--tx);
+  font-size: 12px;
+}
+
+.native-color-button:hover {
+  background: var(--control-hover);
+}
+
 .native-option-selected {
   background-color: var(--control-active);
   color: var(--tx);

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability for the main window",
-  "windows": ["main", "ictool-popover-*"],
+  "windows": ["main", "refract-popover-*"],
   "permissions": [
     "core:default",
     "dialog:default",

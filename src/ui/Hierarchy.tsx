@@ -2,7 +2,6 @@ import { useStore, ICON_ID } from "../state/store";
 import {
   addLayer,
   addGroup,
-  deleteMember,
   toggleHidden,
   renameMember,
 } from "../model/document";
@@ -25,14 +24,11 @@ const AppIcon = ({ light }: { light?: boolean }) => (
     className={`w-[15px] h-[15px] rounded-[4px] shrink-0 ${light ? "bg-white/90" : "bg-gradient-to-br from-sky-400 to-blue-600"}`}
   />
 );
+const CHECKER = "repeating-conic-gradient(#d1d5db 0% 25%, #f8fafc 0% 50%) 0 / 8px 8px";
 const Thumb = ({ src }: { src?: string }) => (
   <div
     className="w-[18px] h-[18px] rounded-[4px] shrink-0 overflow-hidden border border-[color:var(--line)]"
-    style={{
-      background: src
-        ? undefined
-        : "repeating-conic-gradient(#0000000d 0% 25%, #ffffff00 0% 50%) 0 / 8px 8px, #fff",
-    }}
+    style={{ background: CHECKER }}
   >
     {src && (
       <img
@@ -151,6 +147,7 @@ export function Hierarchy({ chromePlatform }: { chromePlatform: ChromePlatform }
   const selectedId = useStore((s) => s.selectedId);
   const select = useStore((s) => s.select);
   const update = useStore((s) => s.update);
+  const deleteSelected = useStore((s) => s.deleteSelected);
   const reorder = useStore((s) => s.reorder);
   const layerThumbs = useStore((s) => s.layerThumbs);
   const [dragId, setDragId] = useState<number | null>(null);
@@ -291,7 +288,7 @@ export function Hierarchy({ chromePlatform }: { chromePlatform: ChromePlatform }
           data-tooltip="Delete"
           data-tooltip-placement="top"
           disabled={selectedId === ICON_ID}
-          onClick={() => update((d) => deleteMember(d, selectedId))}
+          onClick={deleteSelected}
           className="w-7 h-7 rounded-md hover:bg-[color:var(--hover)] text-[color:var(--tx-2)]
           flex items-center justify-center disabled:opacity-30"
         >

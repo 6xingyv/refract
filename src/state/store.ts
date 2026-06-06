@@ -4,7 +4,17 @@ import { allLayers, slotOf, renditionOf } from "../model/types";
 
 const VARIANTS: Rendition[] = ["Default", "Dark", "Mono"];
 const PLATFORM_VARIANTS: Platform[] = ["iOS", "macOS", "watchOS"];
-import { sampleDocument, ICON_ID, moveMember, addImageLayers } from "../model/document";
+import {
+  sampleDocument,
+  ICON_ID,
+  moveMember,
+  addImageLayers,
+  deleteMember,
+  selectionAfterDelete,
+  copyMember,
+  pasteMember,
+  type CopiedMember,
+} from "../model/document";
 import { encodeIcon, decodeIcon } from "../model/io";
 import { Renderer } from "../render/renderer";
 import { Compositor, AssetStore } from "../render/compositor";
@@ -14,6 +24,30 @@ import { invoke } from "@tauri-apps/api/core";
 const assets = new AssetStore();
 let compositor: Compositor | null = null;
 let initOnce: Promise<void> | null = null;
+
+type ImportAsset = { name: string; dataUrl: string };
+type EncodedAsset = { name: string; data: string };
+type HistorySnapshot = { doc: IconDocument; selectedId: number };
+
+const isImportableAssetName = (name: string) => /\.(svg|png)$/i.test(name);
+const fileNameOf = (name: string) => name.split(/[\\/]/).pop() || name;
+const splitAssetName = (name: string) => {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? { stem: name.slice(0, dot), ext: name.slice(dot) } : { stem: name, ext: "" };
+};
+const uniqueAssetName = (name: string, used: Set<string>) => {
+  if (!used.has(name)) {
+    used.add(name);
+    return name;
+  }
+  const { stem, ext } = splitAssetName(name);
+  let i = 2;
+  while (used.has(`${stem}-${i}${ext}`)) i++;
+  const next = `${stem}-${i}${ext}`;
+  used.add(next);
+  return next;
+};
+let memberClipboard: CopiedMember | null = null;
 
 async function ensureCompositor(setError: (e: string | null) => void) {
   if (compositor) return;
@@ -53,8 +87,15 @@ interface State {
   zoom: number;
   error: string | null;
   rendering: boolean;
+  past: HistorySnapshot[];
+  future: HistorySnapshot[];
 
   select: (id: number) => void;
+  undo: () => void;
+  redo: () => void;
+  deleteSelected: () => void;
+  copySelected: () => boolean;
+  pasteCopied: () => boolean;
   setZoom: (z: number) => void;
   setViewport: (w: number, h: number) => void;
   setAppearance: (a: Appearance) => void;
@@ -62,7 +103,8 @@ interface State {
   setBg: (p: Partial<{ bgKind: BgKind; bgImage: number; bgColor: string }>) => void;
   toggleGrid: () => void;
   reorder: (dragId: number, targetId: number, before: boolean) => void;
-  importAssets: (items: { name: string; dataUrl: string }[]) => Promise<void>;
+  importAssets: (items: ImportAsset[]) => Promise<void>;
+  importAssetPaths: (paths: string[]) => Promise<void>;
   update: (fn: (doc: IconDocument) => IconDocument) => void;
   setDoc: (doc: IconDocument) => void;
   openIcon: () => Promise<void>;
@@ -121,6 +163,25 @@ export const useStore = create<State>((set, get) => {
   // initial render
   queueMicrotask(scheduleRender);
 
+  const commitDoc = (doc: IconDocument, selectedId = get().selectedId) => {
+    const current = get();
+    if (doc === current.doc && selectedId === current.selectedId) return;
+    set((s) => ({
+      doc,
+      selectedId,
+      past: [...s.past.slice(-99), { doc: s.doc, selectedId: s.selectedId }],
+      future: [],
+      error: null,
+    }));
+    scheduleRender();
+  };
+
+  const resetDoc = (doc: IconDocument, selectedId = ICON_ID) => {
+    memberClipboard = null;
+    set({ doc, selectedId, past: [], future: [] });
+    scheduleRender();
+  };
+
   return {
     doc: sampleDocument(),
     selectedId: ICON_ID,
@@ -140,24 +201,96 @@ export const useStore = create<State>((set, get) => {
     zoom: 1,
     error: null,
     rendering: false,
+    past: [],
+    future: [],
 
     select: (id) => set({ selectedId: id }),
+    undo: () => {
+      const current = get();
+      const prev = current.past[current.past.length - 1];
+      if (!prev) return;
+      set({
+        doc: prev.doc,
+        selectedId: prev.selectedId,
+        past: current.past.slice(0, -1),
+        future: [{ doc: current.doc, selectedId: current.selectedId }, ...current.future],
+      });
+      scheduleRender();
+    },
+    redo: () => {
+      const current = get();
+      const [next, ...rest] = current.future;
+      if (!next) return;
+      set({
+        doc: next.doc,
+        selectedId: next.selectedId,
+        past: [...current.past.slice(-99), { doc: current.doc, selectedId: current.selectedId }],
+        future: rest,
+      });
+      scheduleRender();
+    },
+    deleteSelected: () => {
+      const { doc, selectedId } = get();
+      if (selectedId === ICON_ID) return;
+      commitDoc(deleteMember(doc, selectedId), selectionAfterDelete(doc, selectedId));
+    },
+    copySelected: () => {
+      memberClipboard = copyMember(get().doc, get().selectedId);
+      return !!memberClipboard;
+    },
+    pasteCopied: () => {
+      if (!memberClipboard) return false;
+      const pasted = pasteMember(get().doc, memberClipboard, get().selectedId);
+      commitDoc(pasted.doc, pasted.selectedId);
+      return true;
+    },
     setZoom: (z) => { set({ zoom: Math.max(0.25, Math.min(4, z)) }); scheduleRender(); },
     setViewport: (w, h) => { if (w === get().viewW && h === get().viewH) return; set({ viewW: w, viewH: h }); scheduleRender(); },
     setAppearance: (a) => { set({ appearance: a, doc: { ...get().doc, previewRendition: renditionOf(a) } }); scheduleRender(); },
     setPreviewBgDark: (v) => set({ previewBgDark: v }),
     setBg: (p) => { set(p as any); scheduleRender(); }, // backdrop feeds the glass refraction -> re-render
     toggleGrid: () => set({ showGrid: !get().showGrid }),
-    reorder: (dragId, targetId, before) => { set({ doc: moveMember(get().doc, dragId, targetId, before) }); scheduleRender(); },
+    reorder: (dragId, targetId, before) => commitDoc(moveMember(get().doc, dragId, targetId, before)),
     importAssets: async (items) => {
-      const valid = items.filter((i) => /\.(svg|png)$/i.test(i.name));
+      const used = new Set(allLayers(get().doc).map((l) => l.imageName).filter(Boolean) as string[]);
+      const valid = items
+        .map((i) => ({ ...i, name: fileNameOf(i.name) }))
+        .filter((i) => isImportableAssetName(i.name))
+        .map((i) => ({ ...i, name: uniqueAssetName(i.name, used) }));
       if (!valid.length) return;
-      for (const it of valid) { try { await assets.add(it.name, it.dataUrl); } catch {} }
-      set({ doc: addImageLayers(get().doc, valid.map((i) => i.name)) });
-      scheduleRender();
+
+      const imported: ImportAsset[] = [];
+      const failed: string[] = [];
+      for (const it of valid) {
+        try {
+          await assets.add(it.name, it.dataUrl);
+          imported.push(it);
+        } catch {
+          failed.push(it.name);
+        }
+      }
+
+      if (imported.length) {
+        const doc = addImageLayers(get().doc, imported.map((i) => i.name));
+        commitDoc(doc, doc.composition.groups[0]?.layers[0]?.id ?? get().selectedId);
+        if (failed.length) set({ error: `Import failed: ${failed.join(", ")}` });
+      } else if (failed.length) {
+        set({ error: `Import failed: ${failed.join(", ")}` });
+      }
     },
-    update: (fn) => { set({ doc: fn(get().doc) }); scheduleRender(); },
-    setDoc: (doc) => { set({ doc }); scheduleRender(); },
+
+    importAssetPaths: async (paths) => {
+      const valid = paths.filter(isImportableAssetName);
+      if (!valid.length) return;
+      try {
+        const imported = await invoke<EncodedAsset[]>("read_image_assets", { paths: valid });
+        await get().importAssets(imported.map((a) => ({ name: a.name, dataUrl: dataUrl(a.name, a.data) })));
+      } catch (e: any) {
+        set({ error: `Import failed: ${e?.message ?? e}` });
+      }
+    },
+    update: (fn) => commitDoc(fn(get().doc)),
+    setDoc: (doc) => resetDoc(doc),
 
     openIcon: async () => {
       // A `.icon` is a directory (a folder on Windows / a package on macOS), so pick a folder.
@@ -167,8 +300,7 @@ export const useStore = create<State>((set, get) => {
       try {
         const pkg = await invoke<{ name: string; json: string; assets: { name: string; data: string }[] }>("read_icon", { path });
         await assets.set(pkg.assets.map((a) => ({ name: a.name, dataUrl: dataUrl(a.name, a.data) })));
-        set({ doc: decodeIcon(pkg.json, pkg.name), selectedId: ICON_ID });
-        scheduleRender();
+        resetDoc(decodeIcon(pkg.json, pkg.name));
       } catch (e: any) {
         set({ error: `Open failed: ${e?.message ?? e}` });
       }

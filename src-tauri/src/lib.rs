@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-const POPOVER_LABEL_PREFIX: &str = "ictool-popover-";
+const POPOVER_LABEL_PREFIX: &str = "refract-popover-";
 
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -86,6 +86,35 @@ fn export_pngs(dir: String, files: Vec<AssetIn>) -> Result<(), String> {
     Ok(())
 }
 
+/// Read SVG/PNG files dropped onto the app.
+#[tauri::command]
+fn read_image_assets(paths: Vec<String>) -> Result<Vec<Asset>, String> {
+    let mut assets = Vec::new();
+    for raw in paths {
+        let path = PathBuf::from(&raw);
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase());
+        if !matches!(ext.as_deref(), Some("svg" | "png")) {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .ok_or_else(|| format!("Invalid asset path: {}", path.display()))?;
+        let bytes = fs::read(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
+        assets.push(Asset {
+            name,
+            data: STANDARD.encode(&bytes),
+        });
+    }
+    Ok(assets)
+}
+
 #[cfg(windows)]
 fn configure_popover_window_flags<R: tauri::Runtime>(window: &tauri::Window<R>) {
     if !window.label().starts_with(POPOVER_LABEL_PREFIX) {
@@ -129,7 +158,12 @@ pub fn run() {
         .plugin(popover_window_flags_plugin())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![read_icon, save_icon, export_pngs])
+        .invoke_handler(tauri::generate_handler![
+            read_icon,
+            save_icon,
+            export_pngs,
+            read_image_assets
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

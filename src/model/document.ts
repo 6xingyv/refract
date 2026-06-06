@@ -1,6 +1,7 @@
 // Pure document operations (doc -> doc), ported from DocumentOps.kt.
 import {
   IconDocument, Group, Layer, Fill, newGroup, newLayer, defaultFill, rgba,
+  newId,
 } from "./types";
 
 const baseName = (file: string) => file.replace(/\.[^.]+$/, "");
@@ -53,6 +54,71 @@ export function deleteMember(doc: IconDocument, id: number): IconDocument {
     .filter((g) => g.id !== id)
     .map((g) => ({ ...g, layers: g.layers.filter((l) => l.id !== id) }));
   return withGroups(doc, groups);
+}
+
+export function selectionAfterDelete(doc: IconDocument, id: number): number {
+  const gi = doc.composition.groups.findIndex((g) => g.id === id);
+  if (gi >= 0) return doc.composition.groups[gi + 1]?.id ?? doc.composition.groups[gi - 1]?.id ?? ICON_ID;
+  for (const g of doc.composition.groups) {
+    const li = g.layers.findIndex((l) => l.id === id);
+    if (li >= 0) return g.layers[li + 1]?.id ?? g.layers[li - 1]?.id ?? g.id;
+  }
+  return ICON_ID;
+}
+
+export type CopiedMember =
+  | { kind: "group"; group: Group }
+  | { kind: "layer"; layer: Layer };
+
+const clonePlain = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
+const copyName = (name: string) => `${name} Copy`;
+
+export function copyMember(doc: IconDocument, id: number): CopiedMember | null {
+  const g = findGroup(doc, id);
+  if (g) return { kind: "group", group: clonePlain(g) };
+  const l = findLayer(doc, id);
+  if (l) return { kind: "layer", layer: clonePlain(l) };
+  return null;
+}
+
+function cloneLayerForPaste(layer: Layer, rename = true): Layer {
+  return { ...clonePlain(layer), id: newId(), name: rename ? copyName(layer.name) : layer.name };
+}
+
+function cloneGroupForPaste(group: Group): Group {
+  const cloned = clonePlain(group);
+  return {
+    ...cloned,
+    id: newId(),
+    name: copyName(group.name),
+    layers: group.layers.map((l) => cloneLayerForPaste(l, false)),
+  };
+}
+
+function owningGroupIndex(doc: IconDocument, id: number): number {
+  const gi = doc.composition.groups.findIndex((g) => g.id === id);
+  if (gi >= 0) return gi;
+  return doc.composition.groups.findIndex((g) => g.layers.some((l) => l.id === id));
+}
+
+export function pasteMember(doc: IconDocument, member: CopiedMember, selectedId: number): { doc: IconDocument; selectedId: number } {
+  const groups = doc.composition.groups.map((g) => ({ ...g, layers: [...g.layers] }));
+  if (member.kind === "group") {
+    const group = cloneGroupForPaste(member.group);
+    const owner = owningGroupIndex(doc, selectedId);
+    groups.splice(owner >= 0 ? owner + 1 : groups.length, 0, group);
+    return { doc: withGroups(doc, groups), selectedId: group.id };
+  }
+
+  if (groups.length === 0) groups.push(newGroup("Icon"));
+  const layer = cloneLayerForPaste(member.layer);
+  let gi = owningGroupIndex(doc, selectedId);
+  if (gi < 0) gi = 0;
+  const selectedLayerIndex = groups[gi].layers.findIndex((l) => l.id === selectedId);
+  const insertAt = selectedLayerIndex >= 0 ? selectedLayerIndex : 0;
+  groups[gi] = { ...groups[gi], layers: [...groups[gi].layers] };
+  groups[gi].layers.splice(insertAt, 0, layer);
+  return { doc: withGroups(doc, groups), selectedId: layer.id };
 }
 
 export function toggleHidden(doc: IconDocument, id: number): IconDocument {

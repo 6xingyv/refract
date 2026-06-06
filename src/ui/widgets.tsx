@@ -1,7 +1,7 @@
 import React from "react";
 import { ChevronsUpDown, ChevronDown } from "lucide-react";
 import type { IcColor } from "../model/types";
-import { openNativeDropdown } from "./nativePopover";
+import { openNativeColorPicker, openNativeDropdown } from "./nativePopover";
 
 /* ---- section: gray header + optional variation dropdown, thin divider ---- */
 export function Section({ title, variation, children }: { title: string; variation?: React.ReactNode; children: React.ReactNode }) {
@@ -98,14 +98,28 @@ export function Variation({ value, options, onChange }: { value: string; options
   return <Dropdown value={value} options={options} onChange={onChange} kind="plain" />;
 }
 
+const hexFromColor = (color: IcColor) =>
+  `#${[color.r, color.g, color.b].map((x) => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, "0")).join("")}`;
+const colorFromHex = (hex: string, alpha: number): IcColor => ({
+  r: parseInt(hex.slice(1, 3), 16) / 255,
+  g: parseInt(hex.slice(3, 5), 16) / 255,
+  b: parseInt(hex.slice(5, 7), 16) / 255,
+  a: alpha,
+});
+
 export function ColorWell({ color, onChange }: { color: IcColor; onChange: (c: IcColor) => void }) {
-  const hex = `#${[color.r, color.g, color.b].map((x) => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, "0")).join("")}`;
+  const ref = React.useRef<HTMLButtonElement>(null);
+  const hex = hexFromColor(color);
   return (
-    <label className="w-[22px] h-[22px] rounded-[6px] border border-[color:var(--line)] cursor-pointer shadow-inner" style={{ background: hex }}>
-      <input type="color" value={hex}
-        onChange={(e) => { const v = e.target.value; onChange({ r: parseInt(v.slice(1, 3), 16) / 255, g: parseInt(v.slice(3, 5), 16) / 255, b: parseInt(v.slice(5, 7), 16) / 255, a: color.a }); }}
-        className="opacity-0 w-0 h-0" />
-    </label>
+    <button
+      ref={ref}
+      className="w-[22px] h-[22px] rounded-[6px] border border-[color:var(--line)] cursor-pointer shadow-inner"
+      style={{ background: hex }}
+      onClick={async () => {
+        const next = ref.current ? await openNativeColorPicker(ref.current, hex) : null;
+        if (next) onChange(colorFromHex(next, color.a));
+      }}
+    />
   );
 }
 

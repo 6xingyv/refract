@@ -7,7 +7,7 @@ import { BG_PRESETS, presetCss } from "../render/backdrop";
 import gridSquare from "../assets/grid-square.png";
 import gridCircle from "../assets/grid-circle.png";
 import type { ChromePlatform } from "./WindowChrome";
-import { openNativeWallpaper } from "./nativePopover";
+import { openNativeColorPicker, openNativeWallpaper } from "./nativePopover";
 
 const SQUARE_PLATS: Platform[] = ["iOS", "macOS"];
 
@@ -36,6 +36,7 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
   const toggleGrid = useStore((s) => s.toggleGrid);
 
   const wallpaperRef = useRef<HTMLButtonElement>(null);
+  const colorRef = useRef<HTMLButtonElement>(null);
   const setPlat = (p: Platform) => update((d) => ({ ...d, previewPlatform: p }));
 
   // bottom-left platform tiles: merge iOS+macOS into one square when squares are "shared".
@@ -70,12 +71,18 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
 
         {/* 1st selector: background — left colour (editable) / right built-in image */}
         <div className="relative flex h-[26px] items-center control-pill p-[3px] gap-[3px]" data-tauri-no-drag>
-          <label aria-label="Background colour" data-tooltip="Background colour"
+          <button
+            ref={colorRef}
+            aria-label="Background colour"
+            data-tooltip="Background colour"
             className={`w-[22px] h-[20px] rounded-s-xl rounded-e-md cursor-pointer ${bgKind === "color" ? "ring-2 ring-accent" : ""}`}
-            style={{ background: bgColor }} onClick={() => setBg({ bgKind: "color" })}>
-            <input type="color" className="opacity-0 w-0 h-0" value={bgColor}
-              onChange={(e) => setBg({ bgKind: "color", bgColor: e.target.value })} />
-          </label>
+            style={{ background: bgColor }}
+            onClick={async () => {
+              setBg({ bgKind: "color" });
+              const next = colorRef.current ? await openNativeColorPicker(colorRef.current, bgColor) : null;
+              if (next) setBg({ bgKind: "color", bgColor: next });
+            }}
+          />
           <button
             ref={wallpaperRef}
             aria-label="Background image"
