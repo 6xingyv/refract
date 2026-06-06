@@ -6,7 +6,7 @@ import {
   resolveCompositionFill,
 } from "../model/types";
 import { Renderer } from "./renderer";
-import { buildUniforms } from "./uniforms";
+import { buildUniforms, type ShapeBounds } from "./uniforms";
 import { squircle } from "./squircle";
 import { paintBackdrop, type BackdropSpec } from "./backdrop";
 
@@ -14,6 +14,7 @@ export interface AssetEntry { name: string; dataUrl: string }
 
 /** Appearance render mode derived from the previewed rendition's appearance code. */
 interface AppearanceMode { monoFamily: boolean; tinted: boolean; hasBackdrop: boolean }
+interface ShapeCacheEntry { data: ImageData; sampled: IcColor | null; bounds: ShapeBounds }
 
 export class AssetStore {
   private images = new Map<string, HTMLImageElement>();
@@ -72,7 +73,7 @@ function tmpCanvas(size: number): HTMLCanvasElement {
 }
 
 export class Compositor {
-  private shapeCache = new Map<string, { data: ImageData; sampled: IcColor | null }>();
+  private shapeCache = new Map<string, ShapeCacheEntry>();
   private chicletCache = new Map<string, HTMLCanvasElement>();
 
   constructor(private renderer: Renderer | null, private assets: AssetStore) {}
@@ -121,7 +122,7 @@ export class Compositor {
     octx.imageSmoothingQuality = "high";
     octx.drawImage(c, 0, 0, size, size);
     const data = octx.getImageData(0, 0, size, size);
-    this.shapeCache.set(key, { data, sampled: layer.imageName ? sampledColor(data) : null });
+    this.shapeCache.set(key, { data, sampled: layer.imageName ? sampledColor(data) : null, bounds: shapeAlphaBounds(data) });
     if (this.shapeCache.size > 96) this.shapeCache.delete(this.shapeCache.keys().next().value!);
     return data;
   }
@@ -132,8 +133,17 @@ export class Compositor {
     const cached = this.shapeCache.get(key);
     if (cached) return cached.sampled;
     const sampled = sampledColor(shape);
-    this.shapeCache.set(key, { data: shape, sampled });
+    this.shapeCache.set(key, { data: shape, sampled, bounds: shapeAlphaBounds(shape) });
     return sampled;
+  }
+
+  private shapeBounds(layer: Layer, size: number, shape: ImageData): ShapeBounds {
+    const key = this.shapeKey(layer, size);
+    const cached = this.shapeCache.get(key);
+    if (cached) return cached.bounds;
+    const bounds = shapeAlphaBounds(shape);
+    this.shapeCache.set(key, { data: shape, sampled: layer.imageName ? sampledColor(shape) : null, bounds });
+    return bounds;
   }
 
   private glassLayerOn(group: Group, layer: Layer, ap: AppearanceMode) {
@@ -201,7 +211,7 @@ export class Compositor {
         const g2 = clearBg ? { ...item.group, translucency: { enabled: true, value: 1 }, blurMaterial: { enabled: false, strength: 0 } } : item.group;
         const layerU = clearBg ? { ...item.layer, isGlass: true, fill: { ...item.layer.fill, kind: "none" as const } } : item.layer;
         const docU = ap.monoFamily ? ({ ...doc, previewRendition: (ap.tinted ? "TintedLight" : "Mono") as Rendition }) : doc;
-        const u = buildUniforms(size, docU, g2, layerU, sampled, layerU.imageName != null);
+        const u = buildUniforms(size, docU, g2, layerU, sampled, layerU.imageName != null, this.shapeBounds(item.layer, size, item.shape));
         prepares.push({
           shape: new Uint8Array(item.shape.data.buffer),
           size,
@@ -318,7 +328,7 @@ export class Compositor {
       const g2 = clearBg ? { ...group, translucency: { enabled: true, value: 1 }, blurMaterial: { enabled: false, strength: 0 } } : group;
       const layerU = clearBg ? { ...layer, isGlass: true, fill: { ...layer.fill, kind: "none" as const } } : layer;
       const docU = ap.monoFamily ? ({ ...doc, previewRendition: (ap.tinted ? "TintedLight" : "Mono") as Rendition }) : doc;
-      const u = buildUniforms(size, docU, g2, layerU, sampled, layerU.imageName != null);
+      const u = buildUniforms(size, docU, g2, layerU, sampled, layerU.imageName != null, this.shapeBounds(layer, size, shapeData));
       const out = await this.renderer!.render(new Uint8Array(shapeData.data.buffer), new Uint8Array(bg.data.buffer), size, u, this.shapeKey(layer, size));
       layerCanvas = imageToCanvas(new ImageData(out, size, size));
     } else if (ap.monoFamily) {
@@ -371,7 +381,7 @@ function chicletUniforms(size: number, doc: IconDocument): Float32Array<ArrayBuf
     0, 0, 0, 0,                                  // shadowCol
     0, 0, 0, 0,                                  // shadowOff, specularOn=0, glowOn
     1, 0, 0, 0,                                  // glassOn=1, translucency, assetColorOn, layerColorShadowOn
-    0, 0, 0, 0,
+    0, 1, 0, 0,
     0, 0, 0, 0,
   ]);
 }
@@ -455,6 +465,26 @@ function sampledColor(data: ImageData): IcColor | null {
   }
   if (aSum <= 0) return null;
   return { r: r / aSum, g: g / aSum, b: b / aSum, a: Math.max(0.35, Math.min(1, aSum / (d.length / 4))) };
+}
+
+function shapeAlphaBounds(data: ImageData): ShapeBounds {
+  let minY = data.height;
+  let maxY = -1;
+  const d = data.data;
+  for (let y = 0; y < data.height; y++) {
+    const row = y * data.width * 4;
+    for (let x = 0; x < data.width; x++) {
+      if (d[row + x * 4 + 3] <= 2) continue;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      break;
+    }
+  }
+  if (maxY < minY) return { top: 0, bottom: 1 };
+  return {
+    top: minY / data.height,
+    bottom: (maxY + 1) / data.height,
+  };
 }
 
 function cssColor(c: IcColor): string {

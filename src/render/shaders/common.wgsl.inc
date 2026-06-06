@@ -16,7 +16,7 @@ struct Params {
     shadowCol : vec4<f32>,   // shadow rgb, a unused
     shadowGeo : vec4<f32>,   // shadowOffset.x, shadowOffset.y, specularOn, glowOn
     flags     : vec4<f32>,   // glassOn, translucency, assetColorOn, layerColorShadowOn
-    _r10      : vec4<f32>,
+    shapeBounds : vec4<f32>, // shapeTop, shapeBottom, unused, unused
     _r11      : vec4<f32>,
 };
 
@@ -45,6 +45,8 @@ fn glassOn()      -> f32 { return P.flags.x; }
 fn translucency() -> f32 { return P.flags.y; }
 fn assetColorOn() -> f32 { return P.flags.z; }
 fn layerColorShadowOn() -> f32 { return P.flags.w; }
+fn shapeTop()     -> f32 { return P.shapeBounds.x; }
+fn shapeBottom()  -> f32 { return P.shapeBounds.y; }
 
 struct VsOut {
     @builtin(position) pos : vec4<f32>,

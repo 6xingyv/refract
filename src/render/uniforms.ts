@@ -1,9 +1,15 @@
 // Builds the Float32Array(48) = 12 vec4 that maps 1:1 to common.wgsl.inc (port of Uniforms.kt).
 import { IconDocument, Group, Layer, IcColor, RENDITIONS } from "../model/types";
 
+export interface ShapeBounds {
+  top: number;
+  bottom: number;
+}
+
 export function buildUniforms(
   size: number, doc: IconDocument, group: Group, layer: Layer,
   sampledColor: IcColor | null, usesAssetColor: boolean,
+  shapeBounds: ShapeBounds = { top: 0, bottom: 1 },
 ): Float32Array<ArrayBuffer> {
   const res = size, texel = 1 / size;
   const ap = RENDITIONS[doc.previewRendition].appearanceCode;
@@ -39,6 +45,8 @@ export function buildUniforms(
 
   const tintC = doc.tintColor;
   const tintStrength = ap === 4 ? doc.tintStrength : 0;
+  const shapeTop = Math.max(0, Math.min(1 - texel, shapeBounds.top));
+  const shapeBottom = Math.max(shapeTop + texel, Math.min(1, shapeBounds.bottom));
 
   return new Float32Array([
     res, res, texel, texel,
@@ -51,7 +59,7 @@ export function buildUniforms(
     sc.r, sc.g, sc.b, 0,
     0, shadowOffY, specOn, glowOn,
     glassOn, translucency, usesAssetColor ? 1 : 0, layerColorShadowOn ? 1 : 0,
-    0, 0, 0, 0,
+    shapeTop, shapeBottom, 0, 0,
     0, 0, 0, 0,
   ]);
 }
