@@ -43,7 +43,7 @@ export function addGroup(doc: IconDocument): IconDocument {
 export function addImageLayers(doc: IconDocument, fileNames: string[]): IconDocument {
   if (fileNames.length === 0) return doc;
   const groups = [...doc.composition.groups];
-  if (groups.length === 0) groups.push(newGroup("Icon"));
+  if (groups.length === 0) groups.push(newGroup("Group"));
   const layers = fileNames.map((n) => newLayer(baseName(n), { imageName: n, isGlass: true, fill: { ...defaultFill(), kind: "none" } }));
   groups[0] = { ...groups[0], layers: [...layers, ...groups[0].layers] };
   return withGroups(doc, groups);
@@ -148,6 +148,17 @@ export const replaceLayer = (doc: IconDocument, nl: Layer): IconDocument =>
 
 export const setCompositionFill = (doc: IconDocument, fill: Fill): IconDocument =>
   ({ ...doc, composition: { ...doc.composition, fill } });
+
+export const setCompositionFillSpec = (doc: IconDocument, slot: string | null, fill: Fill): IconDocument => {
+  if (slot == null) return setCompositionFill(doc, fill);
+  return {
+    ...doc,
+    composition: {
+      ...doc.composition,
+      fillSpecs: { ...(doc.composition.fillSpecs ?? {}), [slot]: fill },
+    },
+  };
+};
 
 /** Move a member (group or layer) to a new index within its level (drag-reorder). */
 export function moveGroup(doc: IconDocument, from: number, to: number): IconDocument {

@@ -3,6 +3,7 @@
 // Browser port of Compositor.kt (Skia -> Canvas2D + WebGPU).
 import {
   IconDocument, Group, Layer, Rendition, IcColor, Fill, PLATFORMS, RENDITIONS, specSlot, resolveGroup, resolveLayer,
+  resolveCompositionFill,
 } from "../model/types";
 import { Renderer } from "./renderer";
 import { buildUniforms } from "./uniforms";
@@ -138,7 +139,7 @@ export class Compositor {
       // The design (colour-tint) is painted ON TOP next, so it sits on the glass and is NOT refracted
       // by its own container; the highlight rim then goes on top of that. Order: refraction → colour → rim.
       if (ap.hasBackdrop && backdrop) await this.applyChicletRefraction(ctx, doc, size, backdrop);
-      paintBackground(ctx, doc, size);
+      paintBackground(ctx, doc, size, slot);
     }
 
     // hierarchy order is front-to-back; composite back-to-front
@@ -269,7 +270,9 @@ export class Compositor {
       layerCanvas = imageToCanvas(tintShape(shapeData, col));
     } else {
       // non-glass: tint by fill colour
-      layerCanvas = imageToCanvas(tintShape(shapeData, layer.fill.primaryColor));
+      layerCanvas = layer.fill.kind === "none" && layer.imageName
+        ? imageToCanvas(shapeData)
+        : imageToCanvas(fillShape(shapeData, layer.fill, RENDITIONS[doc.previewRendition].dark));
     }
     ctx.save();
     const k = size / 1024;
@@ -349,6 +352,42 @@ function tintShape(shape: ImageData, color: IcColor): ImageData {
   return out;
 }
 
+function mix(a: IcColor, b: IcColor, t: number): IcColor {
+  return {
+    r: a.r + (b.r - a.r) * t,
+    g: a.g + (b.g - a.g) * t,
+    b: a.b + (b.b - a.b) * t,
+    a: a.a + (b.a - a.a) * t,
+  };
+}
+
+function fillShape(shape: ImageData, fill: Fill, dark: boolean): ImageData {
+  const out = new ImageData(shape.width, shape.height);
+  if (fill.kind === "none") return out;
+
+  const [x0, y0, x1, y1] = gradientLine(Math.max(shape.width, shape.height), fill.orientationDeg);
+  const vx = x1 - x0, vy = y1 - y0;
+  const denom = vx * vx + vy * vy || 1;
+  const gradientStop = fill.kind === "automaticGradient" ? shade(fill.primaryColor, dark ? 0.55 : 0.78) : fill.secondaryColor;
+
+  for (let y = 0; y < shape.height; y++) {
+    for (let x = 0; x < shape.width; x++) {
+      const i = (y * shape.width + x) * 4;
+      const alpha = shape.data[i + 3] / 255;
+      if (alpha <= 0) continue;
+      const t = fill.kind === "linearGradient" || fill.kind === "automaticGradient"
+        ? Math.max(0, Math.min(1, ((x - x0) * vx + (y - y0) * vy) / denom))
+        : 0;
+      const c = fill.kind === "linearGradient" || fill.kind === "automaticGradient" ? mix(fill.primaryColor, gradientStop, t) : fill.primaryColor;
+      out.data[i] = Math.round(c.r * 255);
+      out.data[i + 1] = Math.round(c.g * 255);
+      out.data[i + 2] = Math.round(c.b * 255);
+      out.data[i + 3] = Math.round(alpha * c.a * 255);
+    }
+  }
+  return out;
+}
+
 function sampledColor(data: ImageData): IcColor | null {
   let r = 0, g = 0, b = 0, aSum = 0;
   const d = data.data;
@@ -366,8 +405,24 @@ function cssColor(c: IcColor): string {
   return `rgba(${to(c.r)},${to(c.g)},${to(c.b)},${c.a})`;
 }
 
-function paintBackground(ctx: CanvasRenderingContext2D, doc: IconDocument, size: number) {
-  const f: Fill = doc.composition.fill;
+function gradientLine(size: number, deg: number): [number, number, number, number] {
+  const r = (deg * Math.PI) / 180;
+  const dx = Math.cos(r) * size * 0.5;
+  const dy = Math.sin(r) * size * 0.5;
+  return [size / 2 - dx, size / 2 - dy, size / 2 + dx, size / 2 + dy];
+}
+
+function shade(c: IcColor, amount: number): IcColor {
+  return {
+    r: Math.max(0, Math.min(1, c.r * amount)),
+    g: Math.max(0, Math.min(1, c.g * amount)),
+    b: Math.max(0, Math.min(1, c.b * amount)),
+    a: c.a,
+  };
+}
+
+function paintBackground(ctx: CanvasRenderingContext2D, doc: IconDocument, size: number, slot: string | null) {
+  const f: Fill = resolveCompositionFill(doc.composition, slot);
   const dark = RENDITIONS[doc.previewRendition].dark;
   if (f.kind === "none") return;
   if (f.kind === "solid") {
@@ -375,10 +430,14 @@ function paintBackground(ctx: CanvasRenderingContext2D, doc: IconDocument, size:
     ctx.fillRect(0, 0, size, size);
     return;
   }
-  const grad = ctx.createLinearGradient(0, 0, 0, size);
-  if (f.kind === "linearGradient" || f.kind === "automaticGradient") {
+  const line = gradientLine(size, f.kind === "automatic" ? 90 : f.orientationDeg);
+  const grad = ctx.createLinearGradient(...line);
+  if (f.kind === "linearGradient") {
     grad.addColorStop(0, cssColor(f.primaryColor));
     grad.addColorStop(1, cssColor(f.secondaryColor));
+  } else if (f.kind === "automaticGradient") {
+    grad.addColorStop(0, cssColor(f.primaryColor));
+    grad.addColorStop(1, cssColor(shade(f.primaryColor, dark ? 0.55 : 0.78)));
   } else {
     // automatic: system background gradient
     if (dark) { grad.addColorStop(0, "rgb(60,60,66)"); grad.addColorStop(1, "rgb(24,24,28)"); }

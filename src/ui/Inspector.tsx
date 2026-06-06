@@ -1,11 +1,10 @@
 import { useStore, ICON_ID } from "../state/store";
-import { replaceGroup, replaceLayer, setCompositionFill, findGroup, findLayer } from "../model/document";
+import { replaceGroup, replaceLayer, setCompositionFillSpec, findGroup, findLayer } from "../model/document";
 import {
-  Group, Layer, GroupSpec, LayerSpec, Lighting, ShadowKind, FillKind, BlendMode, IconDocument, Platform,
-  Appearance, APPEARANCES, slotOf, blendDisplay, resolveGroup, resolveLayer, PLATFORMS,
+  Group, Layer, GroupSpec, LayerSpec, Lighting, ShadowKind, FillKind, Fill, BlendMode, IconDocument, Platform,
+  Appearance, APPEARANCES, slotOf, blendDisplay, resolveGroup, resolveLayer, resolveCompositionFill, PLATFORMS, allLayers,
 } from "../model/types";
 import { Section, Row, Toggle, Pct, ValueChip, Select, Variation, ColorWell } from "./widgets";
-import { Paintbrush, FileText } from "lucide-react";
 import type { ChromePlatform } from "./WindowChrome";
 
 const BLENDS: BlendMode[] = ["normal", "plus-lighter", "plus-darker", "multiply", "screen", "overlay", "soft-light", "hard-light", "darken", "lighten"];
@@ -38,6 +37,7 @@ export function Inspector({ chromePlatform }: { chromePlatform: ChromePlatform }
   const group = findGroup(doc, id);
   const layer = findLayer(doc, id);
   const hasTopDrag = chromePlatform !== "mac";
+  const assetOptions = Array.from(new Set(allLayers(doc).map((l) => l.imageName).filter(Boolean) as string[]));
 
   return (
     <div className="relative z-10 w-[300px] shrink-0 border-l border-[color:var(--line)] flex flex-col panel-surface">
@@ -45,7 +45,7 @@ export function Inspector({ chromePlatform }: { chromePlatform: ChromePlatform }
       <div className="flex-1 overflow-y-auto">
         {id === ICON_ID && <IconInspector doc={doc} update={update} appearanceVar={appearanceVar} appearance={appearance} />}
         {group && <GroupInspector g={group} slot={slot} platform={doc.previewPlatform} update={update} appearanceVar={appearanceVar} compositionVar={platformVar} />}
-        {layer && <LayerInspector l={layer} slot={slot} platform={doc.previewPlatform} update={update} appearanceVar={appearanceVar} compositionVar={platformVar} />}
+        {layer && <LayerInspector l={layer} slot={slot} platform={doc.previewPlatform} update={update} appearanceVar={appearanceVar} compositionVar={platformVar} assetOptions={assetOptions} />}
         {id !== ICON_ID && !group && !layer && <div className="p-4 text-[12px] text-[color:var(--tx-3)]">Select a member</div>}
       </div>
     </div>
@@ -53,21 +53,13 @@ export function Inspector({ chromePlatform }: { chromePlatform: ChromePlatform }
 }
 
 function IconInspector({ doc, update, appearanceVar, appearance }: { doc: IconDocument; update: Upd; appearanceVar: React.ReactNode; appearance: Appearance }) {
-  const f = doc.composition.fill;
-  const fillLabel = f.kind === "solid" ? "Solid" : f.kind === "linearGradient" || f.kind === "automaticGradient" ? "Gradient" : f.kind === "none" ? "None" : "Automatic";
-  const setKind = (label: string) => {
-    const kind: FillKind = label === "Solid" ? "solid" : label === "Gradient" ? "linearGradient" : label === "None" ? "none" : "automatic";
-    update((d) => setCompositionFill(d, { ...f, kind }));
-  };
+  const slot = slotOf(appearance);
+  const f = resolveCompositionFill(doc.composition, slot);
+  const setFill = (fill: Fill) => update((d) => setCompositionFillSpec(d, slot, fill));
   return (
     <>
       <Section title="Color" variation={appearanceVar}>
-        <Row label="Fill"><Select value={fillLabel} options={["Automatic", "Solid", "Gradient", "None"]} onChange={setKind} /></Row>
-        {f.kind === "solid" && <Row label="Color"><ColorWell color={f.primaryColor} onChange={(c) => update((d) => setCompositionFill(d, { ...f, primaryColor: c }))} /></Row>}
-        {(f.kind === "linearGradient" || f.kind === "automaticGradient") && (<>
-          <Row label="Primary"><ColorWell color={f.primaryColor} onChange={(c) => update((d) => setCompositionFill(d, { ...f, primaryColor: c }))} /></Row>
-          <Row label="Secondary"><ColorWell color={f.secondaryColor} onChange={(c) => update((d) => setCompositionFill(d, { ...f, secondaryColor: c }))} /></Row>
-        </>)}
+        <FillEditor fill={f} onChange={setFill} />
       </Section>
       {appearance === "Mono" && (
         <Section title="Tint">
@@ -78,6 +70,27 @@ function IconInspector({ doc, update, appearanceVar, appearance }: { doc: IconDo
       <Section title="Platforms">
         <PlatformsEditor doc={doc} update={update} />
       </Section>
+    </>
+  );
+}
+
+const FILL_OPTIONS = ["Automatic", "Solid", "Gradient", "Auto Gradient", "None"];
+const fillLabel = (f: Fill) =>
+  f.kind === "solid" ? "Solid" : f.kind === "linearGradient" ? "Gradient" : f.kind === "automaticGradient" ? "Auto Gradient" : f.kind === "none" ? "None" : "Automatic";
+const fillKind = (label: string): FillKind =>
+  label === "Solid" ? "solid" : label === "Gradient" ? "linearGradient" : label === "Auto Gradient" ? "automaticGradient" : label === "None" ? "none" : "automatic";
+
+function FillEditor({ fill, onChange }: { fill: Fill; onChange: (fill: Fill) => void }) {
+  return (
+    <>
+      <Row label="Fill"><Select value={fillLabel(fill)} options={FILL_OPTIONS} onChange={(label) => onChange({ ...fill, kind: fillKind(label) })} /></Row>
+      {fill.kind === "solid" && <Row label="Color"><ColorWell color={fill.primaryColor} onChange={(c) => onChange({ ...fill, primaryColor: c })} /></Row>}
+      {fill.kind === "automaticGradient" && <Row label="Color"><ColorWell color={fill.primaryColor} onChange={(c) => onChange({ ...fill, primaryColor: c })} /></Row>}
+      {fill.kind === "linearGradient" && (<>
+        <Row label="Primary"><ColorWell color={fill.primaryColor} onChange={(c) => onChange({ ...fill, primaryColor: c })} /></Row>
+        <Row label="Secondary"><ColorWell color={fill.secondaryColor} onChange={(c) => onChange({ ...fill, secondaryColor: c })} /></Row>
+        <Row label="Angle"><ValueChip value={Math.round(fill.orientationDeg)} unit="deg" onChange={(n) => onChange({ ...fill, orientationDeg: n })} /></Row>
+      </>)}
     </>
   );
 }
@@ -95,6 +108,12 @@ function PlatformsEditor({ doc, update }: { doc: IconDocument; update: Upd }) {
       <Row label="iOS, macOS">
         <Select value={doc.squaresShared ? "Shared" : "Unique"} options={["Shared", "Unique"]}
           onChange={(v) => update((d) => ({ ...d, squaresShared: v === "Shared" }))} />
+      </Row>
+      <Row label="RTL Mirror">
+        <Toggle
+          on={!!doc.composition.implicitAssetMirroring}
+          onChange={(v) => update((d) => ({ ...d, composition: { ...d.composition, implicitAssetMirroring: v } }))}
+        />
       </Row>
       {PLAT_LIST.map((p) => (
         <Row key={p} label={PLATFORMS[p].displayName}>
@@ -141,22 +160,28 @@ function GroupInspector({ g, slot, platform, update, appearanceVar, compositionV
 
       <Section title="Composition" variation={compositionVar}>
         <Row label="Visible"><Toggle on={!cg.isHidden} onChange={(v) => applyPlatform((s) => ({ ...s, isHidden: !v }))} /></Row>
+        <Row label="RTL Mirror"><Toggle on={!!cg.mirrorInRTL} onChange={(v) => applyPlatform((s) => ({ ...s, mirrorInRTL: v }))} /></Row>
         <Layout pos={cg.position} scale={cg.scale} onPos={(p) => applyPlatform((s) => ({ ...s, position: p }))} onScale={(sc) => applyPlatform((s) => ({ ...s, scale: sc }))} />
       </Section>
     </>
   );
 }
 
-function LayerInspector({ l, slot, platform, update, appearanceVar, compositionVar }: { l: Layer; slot: string | null; platform: Platform; update: Upd; appearanceVar: React.ReactNode; compositionVar: React.ReactNode }) {
+function LayerInspector({ l, slot, platform, update, appearanceVar, compositionVar, assetOptions }: { l: Layer; slot: string | null; platform: Platform; update: Upd; appearanceVar: React.ReactNode; compositionVar: React.ReactNode; assetOptions: string[] }) {
   const el = resolveLayer(l, slot);
   const cl = resolveLayer(l, null, platform);
   const apply = (spec: (s: LayerSpec) => LayerSpec, base: (l: Layer) => Layer) =>
     update((d) => replaceLayer(d, slot == null ? base(l) : { ...l, specs: { ...l.specs, [slot]: spec(l.specs[slot] ?? {}) } }));
   const applyPlatform = (spec: (s: LayerSpec) => LayerSpec) =>
     update((d) => replaceLayer(d, { ...l, specs: { ...l.specs, [platform]: spec(l.specs[platform] ?? {}) } }));
+  const imageValue = el.imageName ?? "None";
+  const imageOptions = ["None", ...assetOptions];
+  if (imageValue !== "None" && !imageOptions.includes(imageValue)) imageOptions.splice(1, 0, imageValue);
   return (
     <>
       <Section title="Color" variation={appearanceVar}>
+        <Row label="Image"><Select value={imageValue} options={imageOptions} onChange={(n) => { const imageName = n === "None" ? null : n; apply((s) => ({ ...s, imageName }), (x) => ({ ...x, imageName })); }} /></Row>
+        <FillEditor fill={el.fill} onChange={(fill) => apply((s) => ({ ...s, fill }), (x) => ({ ...x, fill }))} />
         <Row label="Opacity"><Pct value={el.opacity} onChange={(v) => apply((s) => ({ ...s, opacity: v }), (x) => ({ ...x, opacity: v }))} /></Row>
         <Row label="Blend Mode"><Select value={blendDisplay(el.blendMode)} options={BLENDS.map(blendDisplay)} onChange={(n) => { const b = fromBlendLabel(n); apply((s) => ({ ...s, blendMode: b }), (x) => ({ ...x, blendMode: b })); }} /></Row>
       </Section>
@@ -165,6 +190,7 @@ function LayerInspector({ l, slot, platform, update, appearanceVar, compositionV
       </Section>
       <Section title="Composition" variation={compositionVar}>
         <Row label="Visible"><Toggle on={!cl.isHidden} onChange={(v) => applyPlatform((s) => ({ ...s, isHidden: !v }))} /></Row>
+        <Row label="RTL Mirror"><Toggle on={!!cl.mirrorInRTL} onChange={(v) => applyPlatform((s) => ({ ...s, mirrorInRTL: v }))} /></Row>
         <Layout pos={cl.position} scale={cl.scale} onPos={(p) => applyPlatform((s) => ({ ...s, position: p }))} onScale={(sc) => applyPlatform((s) => ({ ...s, scale: sc }))} />
       </Section>
     </>

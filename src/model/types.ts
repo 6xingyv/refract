@@ -96,11 +96,11 @@ export interface Position { x: number; y: number }
 export interface GroupSpec {
   opacity?: number; blendMode?: BlendMode; glassEnabled?: boolean; specularEnabled?: boolean;
   blurMaterial?: BlurMaterial; translucency?: Translucency; shadow?: Shadow; lighting?: Lighting;
-  isHidden?: boolean; position?: Position; scale?: number;
+  isHidden?: boolean; position?: Position; scale?: number; mirrorInRTL?: boolean;
 }
 export interface LayerSpec {
-  opacity?: number; blendMode?: BlendMode; isGlass?: boolean;
-  isHidden?: boolean; position?: Position; scale?: number;
+  imageName?: string | null; fill?: Fill; opacity?: number; blendMode?: BlendMode; isGlass?: boolean;
+  isHidden?: boolean; position?: Position; scale?: number; mirrorInRTL?: boolean;
 }
 
 export interface Layer {
@@ -119,7 +119,10 @@ export interface Group {
   specs: Record<string, GroupSpec>; raw?: any;
 }
 
-export interface IconComposition { groups: Group[]; fill: Fill; extras?: any }
+export interface IconComposition {
+  groups: Group[]; fill: Fill; fillSpecs?: Record<string, Fill>;
+  implicitAssetMirroring?: boolean; extras?: any;
+}
 
 export interface IconDocument {
   name: string; composition: IconComposition;
@@ -164,6 +167,7 @@ export function resolveGroup(g: Group, slot: string | null, platformSlot?: strin
       isHidden: s.isHidden ?? base.isHidden,
       position: s.position ?? base.position,
       scale: s.scale ?? base.scale,
+      mirrorInRTL: s.mirrorInRTL ?? base.mirrorInRTL,
     };
   };
   let out = slot ? apply(g, g.specs[slot]) : g;
@@ -175,18 +179,24 @@ export function resolveLayer(l: Layer, slot: string | null, platformSlot?: strin
     if (!s) return base;
     return {
       ...base,
+      imageName: "imageName" in s ? s.imageName ?? null : base.imageName,
+      fill: s.fill ?? base.fill,
       opacity: s.opacity ?? base.opacity,
       blendMode: s.blendMode ?? base.blendMode,
       isGlass: s.isGlass ?? base.isGlass,
       isHidden: s.isHidden ?? base.isHidden,
       position: s.position ?? base.position,
       scale: s.scale ?? base.scale,
+      mirrorInRTL: s.mirrorInRTL ?? base.mirrorInRTL,
     };
   };
   let out = slot ? apply(l, l.specs[slot]) : l;
   if (platformSlot && platformSlot !== slot) out = apply(out, l.specs[platformSlot]);
   return out;
 }
+
+export const resolveCompositionFill = (composition: IconComposition, slot: string | null): Fill =>
+  slot ? composition.fillSpecs?.[slot] ?? composition.fill : composition.fill;
 
 export const allLayers = (doc: IconDocument): Layer[] => doc.composition.groups.flatMap((g) => g.layers);
 

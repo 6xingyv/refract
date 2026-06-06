@@ -103,6 +103,15 @@ const specSlotFromEntry = (e: any): string | null => {
 };
 const specializationFields = (slot: string) =>
   PLATFORM_SLOTS.has(slot) ? { appearance: "base", idiom: slot } : { appearance: appleAppearance(slot) };
+const hasSpecializationAxis = (e: any): boolean => e?.appearance != null || e?.idiom != null || e?.localization != null || e?.languageDirection != null;
+function baseSpecValue(o: any, key: string): any {
+  const arr = Array.isArray(o?.[key]) ? o[key] : [];
+  const entry = arr.find((e: any) => e && "value" in e && !hasSpecializationAxis(e));
+  return entry?.value;
+}
+function ownOrBase(o: any, ownKey: string, specKey: string = `${ownKey}-specializations`): any {
+  return o && ownKey in o ? o[ownKey] : baseSpecValue(o, specKey);
+}
 function specEntries(o: any, key: string): Array<{ slot: string; value: any }> {
   const arr = Array.isArray(o[key]) ? o[key] : [];
   const out: Array<{ slot: string; value: any }> = [];
@@ -114,10 +123,11 @@ function specEntries(o: any, key: string): Array<{ slot: string; value: any }> {
 }
 
 // ============================ encode ============================
-const DOC_KEYS = new Set(["supported-platforms", "fill", "groups"]);
+const DOC_KEYS = new Set(["supported-platforms", "fill", "fill-specializations", "implicit-asset-mirroring", "groups"]);
 const GROUP_KEYS = new Set(["name", "opacity", "blend-mode", "lighting", "specular", "blur-material", "translucency", "shadow", "position", "is-hidden", "asset-mirroring", "layers",
-  "opacity-specializations", "blend-mode-specializations", "lighting-specializations", "specular-specializations", "blur-material-specializations", "translucency-specializations", "shadow-specializations", "position-specializations", "hidden-specializations"]);
-const LAYER_KEYS = new Set(["name", "image-name", "is-glass", "fill", "opacity", "blend-mode", "position", "is-hidden", "asset-mirroring", "opacity-specializations", "blend-mode-specializations", "glass-specializations", "position-specializations", "hidden-specializations"]);
+  "opacity-specializations", "blend-mode-specializations", "lighting-specializations", "specular-specializations", "blur-material-specializations", "translucency-specializations", "shadow-specializations", "position-specializations", "hidden-specializations", "asset-mirroring-specializations"]);
+const LAYER_KEYS = new Set(["name", "image-name", "is-glass", "fill", "opacity", "blend-mode", "position", "is-hidden", "asset-mirroring",
+  "image-name-specializations", "fill-specializations", "opacity-specializations", "blend-mode-specializations", "glass-specializations", "position-specializations", "hidden-specializations", "asset-mirroring-specializations"]);
 
 function preserve(out: any, raw: any, modeled: Set<string>) {
   if (raw && typeof raw === "object") for (const k of Object.keys(raw)) if (!modeled.has(k)) out[k] = raw[k];
@@ -153,6 +163,7 @@ function encodeGroup(g: Group): any {
     if (s.shadow != null) add("shadow-specializations", slot, shadowEncode(s.shadow));
     if (s.position != null || s.scale != null) add("position-specializations", slot, posEncode(s.scale ?? g.scale, s.position ?? g.position));
     if (s.isHidden != null) add("hidden-specializations", slot, s.isHidden);
+    if (s.mirrorInRTL != null) add("asset-mirroring-specializations", slot, { mirrorable: s.mirrorInRTL });
   }
   putSpecs(o, specs);
   o.layers = g.layers.map(encodeLayer);
@@ -164,19 +175,23 @@ function encodeLayer(l: Layer): any {
   if (l.name) o.name = l.name;
   if (l.imageName) o["image-name"] = l.imageName;
   o["is-glass"] = l.isGlass;
-  if (l.fill.kind === "solid" || l.fill.kind === "linearGradient" || l.fill.kind === "automaticGradient") o.fill = fillEncode(l.fill);
+  if (l.fill.kind !== "none") o.fill = fillEncode(l.fill);
   o.opacity = num(l.opacity);
   o["blend-mode"] = BLEND_OUT[l.blendMode];
   o.position = posEncode(l.scale, l.position);
   if (l.isHidden) o["is-hidden"] = true;
+  if (l.mirrorInRTL) o["asset-mirroring"] = { mirrorable: true };
   const specs: Record<string, any[]> = {};
   const add = (k: string, slot: string, v: any) => (specs[k] ??= []).push({ slot, value: v });
   for (const [slot, s] of Object.entries(l.specs)) {
+    if (s.imageName !== undefined) add("image-name-specializations", slot, s.imageName);
+    if (s.fill != null) add("fill-specializations", slot, fillEncode(s.fill));
     if (s.opacity != null) add("opacity-specializations", slot, num(s.opacity));
     if (s.blendMode != null) add("blend-mode-specializations", slot, BLEND_OUT[s.blendMode]);
     if (s.isGlass != null) add("glass-specializations", slot, s.isGlass);
     if (s.position != null || s.scale != null) add("position-specializations", slot, posEncode(s.scale ?? l.scale, s.position ?? l.position));
     if (s.isHidden != null) add("hidden-specializations", slot, s.isHidden);
+    if (s.mirrorInRTL != null) add("asset-mirroring-specializations", slot, { mirrorable: s.mirrorInRTL });
   }
   putSpecs(o, specs);
   return o;
@@ -201,6 +216,11 @@ export function encodeIcon(doc: IconDocument): string {
   preserve(root, doc.composition.extras, DOC_KEYS);
   root["supported-platforms"] = encodePlatforms(doc.supportedPlatforms, doc.squaresShared);
   root.fill = fillEncode(doc.composition.fill);
+  if (doc.composition.implicitAssetMirroring) root["implicit-asset-mirroring"] = true;
+  const fillSpecs: Record<string, any[]> = {};
+  for (const [slot, fill] of Object.entries(doc.composition.fillSpecs ?? {}))
+    (fillSpecs["fill-specializations"] ??= []).push({ slot, value: fillEncode(fill) });
+  putSpecs(root, fillSpecs);
   root.groups = doc.composition.groups.map(encodeGroup);
   return JSON.stringify(root, null, 2);
 }
@@ -232,11 +252,14 @@ function decodeGroupSpecs(o: any): Record<string, GroupSpec> {
     upd(slot, (s) => { s.position = p.pos; s.scale = p.scale; });
   }
   for (const { slot, value } of specEntries(o, "hidden-specializations")) if (typeof value === "boolean") upd(slot, (s) => (s.isHidden = value));
+  for (const { slot, value } of specEntries(o, "asset-mirroring-specializations")) if (value && typeof value === "object") upd(slot, (s) => (s.mirrorInRTL = !!value.mirrorable));
   return out;
 }
 function decodeLayerSpecs(o: any): Record<string, LayerSpec> {
   const out: Record<string, LayerSpec> = {};
   const upd = (slot: string, f: (s: LayerSpec) => void) => { (out[slot] ??= {}); f(out[slot]); };
+  for (const { slot, value } of specEntries(o, "image-name-specializations")) if (typeof value === "string" || value == null) upd(slot, (s) => (s.imageName = value ?? null));
+  for (const { slot, value } of specEntries(o, "fill-specializations")) upd(slot, (s) => (s.fill = fillDecode(value)));
   for (const { slot, value } of specEntries(o, "opacity-specializations")) if (typeof value === "number") upd(slot, (s) => (s.opacity = value));
   for (const { slot, value } of specEntries(o, "blend-mode-specializations")) upd(slot, (s) => (s.blendMode = blendParse(value)));
   for (const { slot, value } of specEntries(o, "glass-specializations")) if (typeof value === "boolean") upd(slot, (s) => (s.isGlass = value));
@@ -245,40 +268,61 @@ function decodeLayerSpecs(o: any): Record<string, LayerSpec> {
     upd(slot, (s) => { s.position = p.pos; s.scale = p.scale; });
   }
   for (const { slot, value } of specEntries(o, "hidden-specializations")) if (typeof value === "boolean") upd(slot, (s) => (s.isHidden = value));
+  for (const { slot, value } of specEntries(o, "asset-mirroring-specializations")) if (value && typeof value === "object") upd(slot, (s) => (s.mirrorInRTL = !!value.mirrorable));
   return out;
 }
 function decodeLayer(o: any): Layer {
-  const { scale, pos } = posDecode(o.position);
+  const { scale, pos } = posDecode(ownOrBase(o, "position", "position-specializations"));
   const spec: Specular = defaultSpecular();
+  const imageName = ownOrBase(o, "image-name", "image-name-specializations");
+  const fill = ownOrBase(o, "fill", "fill-specializations");
+  const isGlass = ownOrBase(o, "is-glass", "glass-specializations");
+  const hidden = ownOrBase(o, "is-hidden", "hidden-specializations");
+  const mirror = ownOrBase(o, "asset-mirroring", "asset-mirroring-specializations");
   return {
-    kind: "layer", id: newId(), name: o.name ?? "Layer", isHidden: !!o["is-hidden"],
-    imageName: o["image-name"] ?? null, isGlass: o["is-glass"] ?? true,
-    fill: "fill" in o ? fillDecode(o.fill) : { ...defaultFill(), kind: "none" },
-    opacity: o.opacity ?? 1, position: pos, scale, blendMode: blendParse(o["blend-mode"]),
-    specular: spec, mirrorInRTL: !!(o["asset-mirroring"]?.mirrorable), specs: decodeLayerSpecs(o), raw: o,
+    kind: "layer", id: newId(), name: o.name ?? "Layer", isHidden: !!hidden,
+    imageName: typeof imageName === "string" ? imageName : null, isGlass: isGlass ?? true,
+    fill: fill === undefined ? { ...defaultFill(), kind: "none" } : fillDecode(fill),
+    opacity: ownOrBase(o, "opacity", "opacity-specializations") ?? 1, position: pos, scale,
+    blendMode: blendParse(ownOrBase(o, "blend-mode", "blend-mode-specializations")),
+    specular: spec, mirrorInRTL: !!(mirror?.mirrorable), specs: decodeLayerSpecs(o), raw: o,
   };
 }
 function decodeGroup(o: any): Group {
-  const { scale, pos } = posDecode(o.position);
+  const { scale, pos } = posDecode(ownOrBase(o, "position", "position-specializations"));
+  const specular = ownOrBase(o, "specular", "specular-specializations");
+  const shadow = ownOrBase(o, "shadow", "shadow-specializations");
+  const translucency = ownOrBase(o, "translucency", "translucency-specializations");
+  const mirror = ownOrBase(o, "asset-mirroring", "asset-mirroring-specializations");
   return {
-    kind: "group", id: newId(), name: o.name ?? "Group", isHidden: !!o["is-hidden"],
+    kind: "group", id: newId(), name: o.name ?? "Group", isHidden: !!ownOrBase(o, "is-hidden", "hidden-specializations"),
     layers: Array.isArray(o.layers) ? o.layers.map(decodeLayer) : [],
-    opacity: o.opacity ?? 1, position: pos, scale, blendMode: blendParse(o["blend-mode"]),
-    glassEnabled: true, blurMaterial: blurDecode(o["blur-material"]),
-    specular: { ...defaultSpecular(), enabled: o.specular ?? true },
-    shadow: shadowDecode(o.shadow),
-    translucency: o.translucency ? { enabled: !!o.translucency.enabled, value: o.translucency.value ?? 0.6 } : defaultTranslucency(),
-    lighting: o.lighting === "individual" ? "individual" : "combined",
-    mirrorInRTL: !!(o["asset-mirroring"]?.mirrorable), specs: decodeGroupSpecs(o), raw: o,
+    opacity: ownOrBase(o, "opacity", "opacity-specializations") ?? 1, position: pos, scale,
+    blendMode: blendParse(ownOrBase(o, "blend-mode", "blend-mode-specializations")),
+    glassEnabled: true, blurMaterial: blurDecode(ownOrBase(o, "blur-material", "blur-material-specializations")),
+    specular: { ...defaultSpecular(), enabled: specular ?? true },
+    shadow: shadowDecode(shadow),
+    translucency: translucency ? { enabled: !!translucency.enabled, value: translucency.value ?? 0.6 } : defaultTranslucency(),
+    lighting: ownOrBase(o, "lighting", "lighting-specializations") === "individual" ? "individual" : "combined",
+    mirrorInRTL: !!(mirror?.mirrorable), specs: decodeGroupSpecs(o), raw: o,
   };
 }
 
 export function decodeIcon(jsonText: string, name: string): IconDocument {
   const root = JSON.parse(jsonText);
   const plat = decodePlatforms(root["supported-platforms"]);
+  const rootFill = "fill" in root ? root.fill : baseSpecValue(root, "fill-specializations");
+  const fillSpecs: Record<string, Fill> = {};
+  for (const { slot, value } of specEntries(root, "fill-specializations")) fillSpecs[slot] = fillDecode(value);
   return {
     name: name || "Untitled",
-    composition: { groups: Array.isArray(root.groups) ? root.groups.map(decodeGroup) : [], fill: fillDecode(root.fill), extras: root },
+    composition: {
+      groups: Array.isArray(root.groups) ? root.groups.map(decodeGroup) : [],
+      fill: rootFill === undefined ? defaultFill() : fillDecode(rootFill),
+      fillSpecs,
+      implicitAssetMirroring: !!root["implicit-asset-mirroring"],
+      extras: root,
+    },
     supportedPlatforms: plat.platforms, squaresShared: plat.squaresShared,
     previewPlatform: plat.platforms[0] ?? "iOS", previewRendition: "Default",
     background: rgba(0.92, 0.92, 0.94, 1), tintColor: rgba(0.2, 0.5, 1), tintStrength: 0, lightAngleDeg: 45,
