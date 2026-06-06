@@ -1,14 +1,24 @@
-import { useRef, useState, useEffect, useCallback } from "react";
-import { ImagePlus } from "lucide-react";
+import { useRef, useState, useEffect, useCallback, type ReactNode } from "react";
+import { Clipboard, Copy, FolderPlus, ImagePlus, Plus, RotateCcw, RotateCw, Trash2 } from "lucide-react";
 import { Hierarchy } from "./ui/Hierarchy";
 import { Preview } from "./ui/Preview";
 import { Inspector } from "./ui/Inspector";
 import { WindowChrome, detectChromePlatform } from "./ui/WindowChrome";
 import { NativeTooltipProvider } from "./ui/nativePopover";
-import { useStore } from "./state/store";
+import { ICON_ID, useStore } from "./state/store";
+import { addGroup, addLayer } from "./model/document";
 import { backdropCss, isDarkBackdrop } from "./render/backdrop";
 
 type ImportAsset = { name: string; dataUrl: string };
+type ContextMenuState = { x: number; y: number; targetId: number };
+type ContextMenuItem = {
+  label: string;
+  icon: ReactNode;
+  disabled?: boolean;
+  danger?: boolean;
+  separatorBefore?: boolean;
+  onSelect: () => void;
+};
 
 const readAsDataUrl = (f: File, fallbackName = f.name) =>
   new Promise<{ name: string; dataUrl: string }>((res, rej) => {
@@ -59,17 +69,24 @@ async function readClipboardAssets(data: DataTransfer | null): Promise<ImportAss
 export function App() {
   const importAssets = useStore((s) => s.importAssets);
   const importAssetPaths = useStore((s) => s.importAssetPaths);
+  const selectedId = useStore((s) => s.selectedId);
+  const select = useStore((s) => s.select);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const deleteSelected = useStore((s) => s.deleteSelected);
   const copySelected = useStore((s) => s.copySelected);
   const pasteCopied = useStore((s) => s.pasteCopied);
+  const hasMemberClipboard = useStore((s) => s.hasMemberClipboard);
+  const pastCount = useStore((s) => s.past.length);
+  const futureCount = useStore((s) => s.future.length);
+  const update = useStore((s) => s.update);
   const bgKind = useStore((s) => s.bgKind);
   const bgColor = useStore((s) => s.bgColor);
   const bgImage = useStore((s) => s.bgImage);
   const sceneUrl = useStore((s) => s.sceneUrl);
   const setViewport = useStore((s) => s.setViewport);
   const [dragging, setDragging] = useState(false);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const depth = useRef(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const platform = detectChromePlatform();
@@ -181,6 +198,43 @@ export function App() {
     };
   }, [copySelected, deleteSelected, importAssets, pasteCopied, redo, undo]);
 
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      const row = e.target instanceof Element
+        ? e.target.closest<HTMLElement>("[data-hierarchy-row-id]")
+        : null;
+      const rowId = row ? Number(row.dataset.hierarchyRowId) : NaN;
+      const targetId = Number.isFinite(rowId) ? rowId : selectedId;
+      if (Number.isFinite(rowId)) select(rowId);
+      setContextMenu({ x: e.clientX, y: e.clientY, targetId });
+    };
+    document.addEventListener("contextmenu", onContextMenu);
+    return () => document.removeEventListener("contextmenu", onContextMenu);
+  }, [select, selectedId]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.target instanceof Element && e.target.closest(".context-menu-popover")) return;
+      close();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [contextMenu]);
+
   const spec = { kind: bgKind, color: bgColor, image: bgImage };
   // only handle OS file drags here; internal hierarchy drag-reorder is left to the rows.
   const isFiles = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
@@ -191,6 +245,21 @@ export function App() {
     const files = Array.from(e.dataTransfer.files).filter((f) => isImportableAsset(f.name));
     if (!files.length) return;
     await importAssets(await Promise.all(files.map((f) => readAsDataUrl(f))));
+  };
+  const menuTargetId = contextMenu?.targetId ?? selectedId;
+  const contextItems: ContextMenuItem[] = [
+    { label: "Add Part", icon: <Plus size={14} />, onSelect: () => update(addLayer) },
+    { label: "Add Group", icon: <FolderPlus size={14} />, onSelect: () => update(addGroup) },
+    { label: "Copy", icon: <Copy size={14} />, disabled: menuTargetId === ICON_ID, separatorBefore: true, onSelect: copySelected },
+    { label: "Paste", icon: <Clipboard size={14} />, disabled: !hasMemberClipboard, onSelect: pasteCopied },
+    { label: "Delete", icon: <Trash2 size={14} />, disabled: menuTargetId === ICON_ID, danger: true, onSelect: deleteSelected },
+    { label: "Undo", icon: <RotateCcw size={14} />, disabled: pastCount === 0, separatorBefore: true, onSelect: undo },
+    { label: "Redo", icon: <RotateCw size={14} />, disabled: futureCount === 0, onSelect: redo },
+  ];
+  const runContextAction = (item: ContextMenuItem) => {
+    if (item.disabled) return;
+    setContextMenu(null);
+    item.onSelect();
   };
 
   return (
@@ -207,6 +276,14 @@ export function App() {
       <Hierarchy chromePlatform={platform} />
       <Preview chromePlatform={platform} />
       <Inspector chromePlatform={platform} />
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={contextItems}
+          onSelect={runContextAction}
+        />
+      )}
       {dragging && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-accent/10 backdrop-blur-[2px] pointer-events-none">
           <div className="px-6 py-4 rounded-2xl bg-[color:var(--popover)] shadow-xl border-2 border-dashed border-accent text-[15px] font-medium text-accent flex items-center gap-2">
@@ -214,6 +291,36 @@ export function App() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ContextMenu({ x, y, items, onSelect }: { x: number; y: number; items: ContextMenuItem[]; onSelect: (item: ContextMenuItem) => void }) {
+  const width = 184;
+  const height = items.length * 28 + items.filter((item) => item.separatorBefore).length * 7 + 10;
+  const left = Math.max(8, Math.min(x, window.innerWidth - width - 8));
+  const top = Math.max(8, Math.min(y, window.innerHeight - height - 8));
+  return (
+    <div
+      className="context-menu-popover"
+      style={{ left, top, width }}
+      onContextMenu={(e) => e.preventDefault()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      {items.map((item) => (
+        <div key={item.label}>
+          {item.separatorBefore && <div className="context-menu-separator" />}
+          <button
+            type="button"
+            disabled={item.disabled}
+            className={`context-menu-item ${item.danger ? "context-menu-item-danger" : ""}`}
+            onClick={() => onSelect(item)}
+          >
+            <span className="context-menu-icon">{item.icon}</span>
+            <span className="truncate">{item.label}</span>
+          </button>
+        </div>
+      ))}
     </div>
   );
 }

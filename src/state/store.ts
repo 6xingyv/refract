@@ -89,6 +89,7 @@ interface State {
   rendering: boolean;
   past: HistorySnapshot[];
   future: HistorySnapshot[];
+  hasMemberClipboard: boolean;
 
   select: (id: number) => void;
   undo: () => void;
@@ -178,7 +179,7 @@ export const useStore = create<State>((set, get) => {
 
   const resetDoc = (doc: IconDocument, selectedId = ICON_ID) => {
     memberClipboard = null;
-    set({ doc, selectedId, past: [], future: [] });
+    set({ doc, selectedId, past: [], future: [], hasMemberClipboard: false });
     scheduleRender();
   };
 
@@ -203,6 +204,7 @@ export const useStore = create<State>((set, get) => {
     rendering: false,
     past: [],
     future: [],
+    hasMemberClipboard: false,
 
     select: (id) => set({ selectedId: id }),
     undo: () => {
@@ -236,6 +238,7 @@ export const useStore = create<State>((set, get) => {
     },
     copySelected: () => {
       memberClipboard = copyMember(get().doc, get().selectedId);
+      set({ hasMemberClipboard: !!memberClipboard });
       return !!memberClipboard;
     },
     pasteCopied: () => {
