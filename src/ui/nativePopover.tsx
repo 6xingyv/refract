@@ -4,13 +4,22 @@ import { currentMonitor, Effect, EffectState, getCurrentWindow, LogicalPosition,
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 type Placement = "bottom-start" | "bottom-end" | "bottom" | "top-start" | "top-end" | "top";
-type PopoverKind = "dropdown" | "tooltip" | "wallpaper" | "color";
+type PopoverKind = "dropdown" | "tooltip" | "wallpaper" | "color" | "contextMenu";
+
+export type NativeContextMenuItem = {
+  id: string;
+  label: string;
+  disabled?: boolean;
+  danger?: boolean;
+  separatorBefore?: boolean;
+};
 
 export type PopupPayload =
   | { kind: "dropdown"; sourceId: string; value: string; options: string[]; variant: "chip" | "plain"; dark: boolean }
   | { kind: "tooltip"; sourceId: string; text: string; dark: boolean }
   | { kind: "wallpaper"; sourceId: string; selected: number; presets: string[]; dark: boolean }
-  | { kind: "color"; sourceId: string; value: string; dark: boolean };
+  | { kind: "color"; sourceId: string; value: string; dark: boolean }
+  | { kind: "contextMenu"; sourceId: string; items: NativeContextMenuItem[]; dark: boolean };
 
 type PopupResult = { sourceId: string; value?: string | number; cancelled?: boolean };
 type PopupReady = { label: string };
@@ -23,7 +32,7 @@ type PopupSlot = {
 };
 
 const EDGE = 8;
-const POPUP_KINDS: PopoverKind[] = ["tooltip", "dropdown", "wallpaper", "color"];
+const POPUP_KINDS: PopoverKind[] = ["tooltip", "dropdown", "wallpaper", "color", "contextMenu"];
 let serial = 0;
 let eventReady: Promise<void> | null = null;
 let readyEventReady: Promise<void> | null = null;
@@ -37,6 +46,7 @@ const closedSources = new Set<string>();
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
+const appIsDarkMode = () => window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
 
 function sourceId(kind: PopoverKind) {
   serial += 1;
@@ -98,6 +108,14 @@ function sizeFor(payload: PopupPayload, anchorWidth: number) {
   if (payload.kind === "color") {
     return { width: 220, height: 238 };
   }
+  if (payload.kind === "contextMenu") {
+    const maxLabel = payload.items.reduce((n, item) => Math.max(n, item.label.length), 0);
+    const separators = payload.items.filter((item) => item.separatorBefore).length;
+    return {
+      width: textWidth("X".repeat(maxLabel), 132, 210),
+      height: Math.min(280, payload.items.length * 26 + separators * 9 + 10),
+    };
+  }
   const maxLabel = payload.options.reduce((n, o) => Math.max(n, o.length), 0);
   return {
     width: Math.max(Math.ceil(anchorWidth), textWidth("X".repeat(maxLabel), 88, 180)),
@@ -137,6 +155,27 @@ async function screenPosition(anchor: HTMLElement, size: { width: number; height
       ? anchorRight - size.width
       : anchorLeft + rect.width / 2 - size.width / 2;
   const rawY = side === "bottom" ? anchorBottom + gap : anchorTop - size.height - gap;
+
+  return {
+    x: clamp(Math.round(rawX), Math.round(workX + EDGE), Math.round(workX + workW - size.width - EDGE)),
+    y: clamp(Math.round(rawY), Math.round(workY + EDGE), Math.round(workY + workH - size.height - EDGE)),
+  };
+}
+
+async function pointScreenPosition(clientX: number, clientY: number, size: { width: number; height: number }) {
+  const appWindow = getCurrentWindow();
+  const scale = await appWindow.scaleFactor();
+  const inner = await appWindow.innerPosition();
+  const monitor = await currentMonitor();
+
+  const innerX = inner.x / scale;
+  const innerY = inner.y / scale;
+  const workX = monitor ? monitor.workArea.position.x / monitor.scaleFactor : innerX;
+  const workY = monitor ? monitor.workArea.position.y / monitor.scaleFactor : innerY;
+  const workW = monitor ? monitor.workArea.size.width / monitor.scaleFactor : window.innerWidth;
+  const workH = monitor ? monitor.workArea.size.height / monitor.scaleFactor : window.innerHeight;
+  const rawX = innerX + clientX;
+  const rawY = innerY + clientY;
 
   return {
     x: clamp(Math.round(rawX), Math.round(workX + EDGE), Math.round(workX + workW - size.width - EDGE)),
@@ -194,8 +233,8 @@ async function ensurePopoverSlot(kind: PopoverKind) {
     backgroundColor: "#00000000",
     closable: false,
     decorations: false,
-    focus: false,
-    focusable: false,
+    focus: kind === "color",
+    focusable: kind === "color",
     height: 1,
     parent: parent.label,
     preventOverflow: true,
@@ -226,7 +265,7 @@ async function ensurePopoverSlot(kind: PopoverKind) {
 
 export async function prewarmNativePopovers() {
   if (!isTauri()) return;
-  await Promise.all(POPUP_KINDS.map(async (kind) => {
+  await Promise.all(POPUP_KINDS.filter((kind) => kind !== "color").map(async (kind) => {
     const slot = await ensurePopoverSlot(kind);
     await slot.ready;
   }));
@@ -266,6 +305,20 @@ export async function closeAllNativePopovers() {
   await Promise.all([...windows.keys()].map(closeNativePopover));
 }
 
+async function destroyPopoverSlot(kind: PopoverKind) {
+  const slot = slots.get(kind);
+  if (!slot) return;
+  const activeId = slot.activeSourceId;
+  if (activeId) await closeNativePopover(activeId);
+  slots.delete(kind);
+  readyResolvers.delete(slot.label);
+  try {
+    await slot.win.destroy();
+  } catch {
+    try { await slot.win.close(); } catch {}
+  }
+}
+
 async function openNativePopover(anchor: HTMLElement, payload: PopupPayload, placement: Placement) {
   if (!isTauri()) return null;
   closedSources.delete(payload.sourceId);
@@ -301,10 +354,45 @@ async function openNativePopover(anchor: HTMLElement, payload: PopupPayload, pla
   return slot.win;
 }
 
+async function openNativePopoverAtPoint(clientX: number, clientY: number, payload: PopupPayload) {
+  if (!isTauri()) return null;
+  closedSources.delete(payload.sourceId);
+  const slot = await ensurePopoverSlot(payload.kind);
+  await slot.ready;
+  if (closedSources.has(payload.sourceId)) return null;
+
+  if (slot.activeSourceId && slot.activeSourceId !== payload.sourceId) {
+    await closeNativePopover(slot.activeSourceId);
+  }
+
+  const size = sizeFor(payload, 0);
+  const pos = await pointScreenPosition(clientX, clientY, size);
+  slot.activeSourceId = payload.sourceId;
+  windows.set(payload.sourceId, slot.win);
+  sourceKinds.set(payload.sourceId, payload.kind);
+
+  await slot.win.setSize(new LogicalSize(size.width, size.height));
+  await slot.win.setPosition(new LogicalPosition(pos.x, pos.y));
+  if (closedSources.has(payload.sourceId)) {
+    await closeNativePopover(payload.sourceId);
+    return null;
+  }
+
+  await emitTo(slot.label, payloadEvent(slot.kind), payload);
+  if (closedSources.has(payload.sourceId)) {
+    await closeNativePopover(payload.sourceId);
+    return null;
+  }
+
+  suppressBlurUntil = Date.now() + 250;
+  await slot.win.show();
+  return slot.win;
+}
+
 export async function openNativeDropdown(anchor: HTMLElement, value: string, options: string[], variant: "chip" | "plain") {
   await closeNativePopoversByKind("tooltip");
   const id = sourceId("dropdown");
-  const dark = document.documentElement.classList.contains("ui-dark") || document.querySelector(".ui-dark") != null;
+  const dark = appIsDarkMode();
   const payload: PopupPayload = { kind: "dropdown", sourceId: id, value, options, variant, dark };
   const win = await openNativePopover(anchor, payload, variant === "plain" ? "bottom-end" : "bottom-start");
   if (!win) return null;
@@ -314,7 +402,7 @@ export async function openNativeDropdown(anchor: HTMLElement, value: string, opt
 export async function openNativeWallpaper(anchor: HTMLElement, presets: string[], selected: number) {
   await closeNativePopoversByKind("tooltip");
   const id = sourceId("wallpaper");
-  const dark = document.documentElement.classList.contains("ui-dark") || document.querySelector(".ui-dark") != null;
+  const dark = appIsDarkMode();
   const win = await openNativePopover(anchor, { kind: "wallpaper", sourceId: id, presets, selected, dark }, "bottom-end");
   if (!win) return null;
   return new Promise<number | null>((resolve) => pending.set(id, (v) => resolve(typeof v === "number" ? v : null)));
@@ -322,9 +410,19 @@ export async function openNativeWallpaper(anchor: HTMLElement, presets: string[]
 
 export async function openNativeColorPicker(anchor: HTMLElement, value: string) {
   await closeNativePopoversByKind("tooltip");
+  await destroyPopoverSlot("color");
   const id = sourceId("color");
-  const dark = document.documentElement.classList.contains("ui-dark") || document.querySelector(".ui-dark") != null;
+  const dark = appIsDarkMode();
   const win = await openNativePopover(anchor, { kind: "color", sourceId: id, value, dark }, "bottom-end");
+  if (!win) return null;
+  return new Promise<string | null>((resolve) => pending.set(id, (v) => resolve(typeof v === "string" ? v : null)));
+}
+
+export async function openNativeContextMenu(clientX: number, clientY: number, items: NativeContextMenuItem[]) {
+  await closeNativePopoversByKind("tooltip");
+  const id = sourceId("contextMenu");
+  const dark = appIsDarkMode();
+  const win = await openNativePopoverAtPoint(clientX, clientY, { kind: "contextMenu", sourceId: id, items, dark });
   if (!win) return null;
   return new Promise<string | null>((resolve) => pending.set(id, (v) => resolve(typeof v === "string" ? v : null)));
 }
@@ -345,7 +443,7 @@ export function NativeTooltipProvider() {
       const id = sourceId("tooltip");
       const currentTicket = ticket.current;
       active.current = { id, anchor: el, ticket: currentTicket };
-      const dark = document.documentElement.classList.contains("ui-dark") || document.querySelector(".ui-dark") != null;
+      const dark = appIsDarkMode();
       void closeNativePopoversByKind("tooltip").then(() => {
         if (active.current?.id !== id || active.current.ticket !== currentTicket) return;
         void openNativePopover(el, { kind: "tooltip", sourceId: id, text, dark }, el.dataset.tooltipPlacement === "top" ? "top" : "bottom").then((win) => {
@@ -454,6 +552,26 @@ function hsvToRgb({ h, s, v }: Hsv): Rgb {
   return { r: (rp + m) * 255, g: (gp + m) * 255, b: (bp + m) * 255 };
 }
 
+function NativeContextMenu({ items, send }: { items: NativeContextMenuItem[]; send: (value?: string | number) => Promise<void> }) {
+  return (
+    <div className="native-context-menu-window" onContextMenu={(e) => e.preventDefault()}>
+      {items.map((item) => (
+        <React.Fragment key={item.id}>
+          {item.separatorBefore && <div className="native-context-menu-separator" />}
+          <button
+            type="button"
+            disabled={item.disabled}
+            className={`native-context-menu-option ${item.danger ? "native-context-menu-option-danger" : ""}`}
+            onClick={() => void send(item.id)}
+          >
+            {item.label}
+          </button>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
 function NativeColorPicker({ value, send }: { value: string; send: (value?: string | number) => Promise<void> }) {
   const [hsv, setHsv] = React.useState(() => rgbToHsv(hexToRgb(value)));
   const hex = rgbToHex(hsvToRgb(hsv));
@@ -507,7 +625,7 @@ function NativeColorPicker({ value, send }: { value: string; send: (value?: stri
 export function PopupWindow() {
   const popupKind = React.useMemo<PopoverKind | null>(() => {
     const raw = new URLSearchParams(window.location.search).get("popup-kind");
-    return raw === "tooltip" || raw === "dropdown" || raw === "wallpaper" || raw === "color" ? raw : null;
+    return raw === "tooltip" || raw === "dropdown" || raw === "wallpaper" || raw === "color" || raw === "contextMenu" ? raw : null;
   }, []);
   const [payload, setPayload] = React.useState<PopupPayload | null>(() => {
     const raw = new URLSearchParams(window.location.search).get("data");
@@ -537,7 +655,7 @@ export function PopupWindow() {
   }, [popupKind]);
 
   React.useEffect(() => {
-    document.body.classList.toggle("ui-dark", !!payload?.dark);
+    document.body.classList.toggle("native-popover-dark", !!payload?.dark);
   }, [payload?.dark]);
 
   const send = async (value?: string | number) => {
@@ -553,6 +671,9 @@ export function PopupWindow() {
   }
   if (payload.kind === "color") {
     return <NativeColorPicker value={payload.value} send={send} />;
+  }
+  if (payload.kind === "contextMenu") {
+    return <NativeContextMenu items={payload.items} send={send} />;
   }
   if (payload.kind === "wallpaper") {
     return (
