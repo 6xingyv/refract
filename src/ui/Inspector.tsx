@@ -9,8 +9,10 @@ import type { ChromePlatform } from "./WindowChrome";
 
 const BLENDS: BlendMode[] = ["normal", "plus-lighter", "plus-darker", "multiply", "screen", "overlay", "soft-light", "hard-light", "darken", "lighten"];
 const fromBlendLabel = (s: string) => BLENDS.find((b) => blendDisplay(b) === s) ?? "normal";
+const SQUARE_PLATS: Platform[] = ["iOS", "macOS"];
 
 type Upd = (fn: (d: IconDocument) => IconDocument) => void;
+type PlatformChoice = { value: Platform; label: string };
 
 export function Inspector({ chromePlatform }: { chromePlatform: ChromePlatform }) {
   const doc = useStore((s) => s.doc);
@@ -23,14 +25,22 @@ export function Inspector({ chromePlatform }: { chromePlatform: ChromePlatform }
   const appearanceVar = (
     <Variation value={appearance} options={APPEARANCES} onChange={(v) => setAppearance(v as Appearance)} />
   );
-  const platformOptions = doc.supportedPlatforms.includes(doc.previewPlatform)
-    ? doc.supportedPlatforms
-    : [doc.previewPlatform, ...doc.supportedPlatforms];
+  const platformChoices = compositionPlatformChoices(doc);
+  const sharedSquareChoice =
+    doc.squaresShared && SQUARE_PLATS.includes(doc.previewPlatform)
+      ? platformChoices.find((choice) => SQUARE_PLATS.includes(choice.value))
+      : undefined;
+  const platformValue = platformChoices.find((choice) => choice.value === doc.previewPlatform)?.label
+    ?? sharedSquareChoice?.label
+    ?? PLATFORMS[doc.previewPlatform].displayName;
   const platformVar = (
     <Variation
-      value={doc.previewPlatform}
-      options={platformOptions}
-      onChange={(v) => update((d) => ({ ...d, previewPlatform: v as Platform }))}
+      value={platformValue}
+      options={platformChoices.map((choice) => choice.label)}
+      onChange={(label) => {
+        const choice = platformChoices.find((item) => item.label === label);
+        if (choice) update((d) => ({ ...d, previewPlatform: choice.value }));
+      }}
     />
   );
 
@@ -50,6 +60,29 @@ export function Inspector({ chromePlatform }: { chromePlatform: ChromePlatform }
       </div>
     </div>
   );
+}
+
+function compositionPlatformChoices(doc: IconDocument): PlatformChoice[] {
+  const supported = doc.supportedPlatforms.includes(doc.previewPlatform)
+    ? doc.supportedPlatforms
+    : [doc.previewPlatform, ...doc.supportedPlatforms];
+  const choices: PlatformChoice[] = [];
+  const squares = SQUARE_PLATS.filter((platform) => supported.includes(platform));
+
+  if (doc.squaresShared && squares.length) {
+    choices.push({
+      value: squares[0],
+      label: squares.map((platform) => PLATFORMS[platform].displayName).join(", "),
+    });
+  } else {
+    for (const platform of squares) choices.push({ value: platform, label: PLATFORMS[platform].displayName });
+  }
+
+  for (const platform of supported) {
+    if (SQUARE_PLATS.includes(platform)) continue;
+    choices.push({ value: platform, label: PLATFORMS[platform].displayName });
+  }
+  return choices;
 }
 
 function IconInspector({ doc, update, appearanceVar, appearance }: { doc: IconDocument; update: Upd; appearanceVar: React.ReactNode; appearance: Appearance }) {
