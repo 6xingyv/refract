@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "icon-composer",
+      "name": "refract",
       "dependencies": {
         "@tauri-apps/api": "^2.1.1",
         "@tauri-apps/plugin-dialog": "^2.2.0",
