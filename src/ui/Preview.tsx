@@ -240,7 +240,7 @@ function GridGuide({ src, dark }: { src: string; dark: boolean }) {
 }
 
 const luminance = (hex: string): number => {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  const m = /^#?([0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(hex.trim());
   if (!m) return 0.5;
   const n = parseInt(m[1], 16);
   return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;

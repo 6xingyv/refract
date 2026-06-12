@@ -18,7 +18,7 @@ export type PopupPayload =
   | { kind: "dropdown"; sourceId: string; value: string; options: string[]; variant: "chip" | "plain"; dark: boolean }
   | { kind: "tooltip"; sourceId: string; text: string; dark: boolean }
   | { kind: "wallpaper"; sourceId: string; selected: number; presets: string[]; dark: boolean }
-  | { kind: "color"; sourceId: string; value: string; dark: boolean }
+  | { kind: "color"; sourceId: string; value: string; alpha?: number; dark: boolean }
   | { kind: "contextMenu"; sourceId: string; items: NativeContextMenuItem[]; dark: boolean };
 
 type PopupResult = { sourceId: string; value?: string | number; cancelled?: boolean };
@@ -108,7 +108,7 @@ function sizeFor(payload: PopupPayload, anchorWidth: number) {
     return { width: 156, height: rows * 54 + 20 + Math.max(0, rows - 1) * 8 };
   }
   if (payload.kind === "color") {
-    return { width: 220, height: 190 };
+    return { width: 252, height: 334 };
   }
   if (payload.kind === "contextMenu") {
     const maxLabel = payload.items.reduce((n, item) => Math.max(n, item.label.length), 0);
@@ -130,7 +130,9 @@ function closeSlotIfFocusLeft(slot: PopupSlot) {
     const activeId = slot.activeSourceId;
     if (!activeId) return;
     void TauriWindow.getFocusedWindow().then((focusedWindow) => {
-      if (focusedWindow?.label === slot.label) return;
+      const focusedLabel = focusedWindow?.label ?? "";
+      if (focusedLabel === slot.label) return;
+      if (slot.kind === "color" && focusedLabel === slotLabel("dropdown")) return;
       void closeNativePopover(activeId);
     }).catch(() => {
       void closeNativePopover(activeId);
@@ -442,12 +444,12 @@ export async function openNativeWallpaper(anchor: HTMLElement, presets: string[]
   return new Promise<number | null>((resolve) => pending.set(id, (v) => resolve(typeof v === "number" ? v : null)));
 }
 
-export async function openNativeColorPicker(anchor: HTMLElement, value: string) {
+export async function openNativeColorPicker(anchor: HTMLElement, value: string, alpha?: number) {
   await closeNativePopoversByKind("tooltip");
   await destroyPopoverSlot("color");
   const id = sourceId("color");
   const dark = appIsDarkMode();
-  const win = await openNativePopover(anchor, { kind: "color", sourceId: id, value, dark }, "bottom-end");
+  const win = await openNativePopover(anchor, { kind: "color", sourceId: id, value, alpha, dark }, "bottom-end");
   if (!win) return null;
   return new Promise<string | null>((resolve) => pending.set(id, (v) => resolve(typeof v === "string" ? v : null)));
 }
@@ -565,16 +567,32 @@ export function NativeTooltipProvider() {
 
 type Rgb = { r: number; g: number; b: number };
 type Hsv = { h: number; s: number; v: number };
+type Hsl = { h: number; s: number; l: number };
+type ColorInputMode = "HEX" | "RGB" | "HSL" | "HSB";
 
 function hexToRgb(hex: string): Rgb {
   const clean = hex.replace("#", "").trim();
-  const full = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean;
+  const rgb = clean.length === 8 ? clean.slice(0, 6) : clean;
+  const full = rgb.length === 3 ? rgb.split("").map((c) => c + c).join("") : rgb;
   const n = /^[0-9a-f]{6}$/i.test(full) ? parseInt(full, 16) : 0xffffff;
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
+function hexToAlpha(hex: string) {
+  const clean = hex.replace("#", "").trim();
+  if (!/^[0-9a-f]{8}$/i.test(clean)) return 1;
+  return parseInt(clean.slice(6, 8), 16) / 255;
+}
+
 function rgbToHex({ r, g, b }: Rgb) {
   return `#${[r, g, b].map((n) => Math.round(clamp(n, 0, 255)).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function colorToHex(rgb: Rgb, alpha: number) {
+  const hex = rgbToHex(rgb);
+  if (alpha >= 0.995) return hex;
+  const a = Math.round(clamp(alpha, 0, 1) * 255).toString(16).padStart(2, "0");
+  return `${hex}${a}`;
 }
 
 function rgbToHsv({ r, g, b }: Rgb): Hsv {
@@ -606,6 +624,45 @@ function hsvToRgb({ h, s, v }: Hsv): Rgb {
   return { r: (rp + m) * 255, g: (gp + m) * 255, b: (bp + m) * 255 };
 }
 
+function rgbToHsl({ r, g, b }: Rgb): Hsl {
+  const rn = r / 255, gn = g / 255, bn = b / 255;
+  const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+  const d = max - min;
+  const l = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  if (d !== 0) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    if (max === rn) h = ((gn - bn) / d) % 6;
+    else if (max === gn) h = (bn - rn) / d + 2;
+    else h = (rn - gn) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s, l };
+}
+
+function hslToRgb({ h, s, l }: Hsl): Rgb {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = l - c / 2;
+  let rp = 0, gp = 0, bp = 0;
+  if (h < 60) [rp, gp, bp] = [c, x, 0];
+  else if (h < 120) [rp, gp, bp] = [x, c, 0];
+  else if (h < 180) [rp, gp, bp] = [0, c, x];
+  else if (h < 240) [rp, gp, bp] = [0, x, c];
+  else if (h < 300) [rp, gp, bp] = [x, 0, c];
+  else [rp, gp, bp] = [c, 0, x];
+  return { r: (rp + m) * 255, g: (gp + m) * 255, b: (bp + m) * 255 };
+}
+
+function parseHexInput(text: string): Rgb | null {
+  const clean = text.replace("#", "").trim();
+  const rgb = clean.length === 8 ? clean.slice(0, 6) : clean;
+  if (!/^[0-9a-f]{3}$|^[0-9a-f]{6}$/i.test(rgb)) return null;
+  return hexToRgb(rgb);
+}
+
 function NativeContextMenu({ items, send }: { items: NativeContextMenuItem[]; send: (value?: string | number) => Promise<void> }) {
   return (
     <div className="native-context-menu-window" onContextMenu={(e) => e.preventDefault()}>
@@ -626,10 +683,22 @@ function NativeContextMenu({ items, send }: { items: NativeContextMenuItem[]; se
   );
 }
 
-function NativeColorPicker({ value, send }: { value: string; send: (value?: string | number) => Promise<void> }) {
+function NativeColorPicker({ value, alpha: initialAlpha, send }: { value: string; alpha?: number; send: (value?: string | number) => Promise<void> }) {
+  const modeRef = React.useRef<HTMLButtonElement>(null);
   const [hsv, setHsv] = React.useState(() => rgbToHsv(hexToRgb(value)));
+  const [alpha, setAlpha] = React.useState(() => initialAlpha ?? hexToAlpha(value));
+  const [mode, setMode] = React.useState<ColorInputMode>("HEX");
+  const [hexText, setHexText] = React.useState(() => rgbToHex(hexToRgb(value)).slice(1).toUpperCase());
+  const [editingHex, setEditingHex] = React.useState(false);
+  const rgb = hsvToRgb(hsv);
   const hex = rgbToHex(hsvToRgb(hsv));
+  const outHex = colorToHex(rgb, alpha);
   const hue = `hsl(${hsv.h}, 100%, 50%)`;
+  const hsl = rgbToHsl(rgb);
+
+  React.useEffect(() => {
+    if (!editingHex) setHexText(hex.slice(1).toUpperCase());
+  }, [editingHex, hex]);
 
   const updateSv = (e: React.PointerEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -643,9 +712,46 @@ function NativeColorPicker({ value, send }: { value: string; send: (value?: stri
     const rect = e.currentTarget.getBoundingClientRect();
     setHsv((c) => ({ ...c, h: clamp((e.clientX - rect.left) / rect.width, 0, 1) * 360 }));
   };
+  const updateAlpha = (raw: string) => {
+    const n = parseFloat(raw);
+    if (!Number.isNaN(n)) setAlpha(clamp(n, 0, 100) / 100);
+  };
+  const updateRgb = (channel: keyof Rgb, raw: string) => {
+    const n = parseFloat(raw);
+    if (Number.isNaN(n)) return;
+    setHsv(rgbToHsv({ ...rgb, [channel]: clamp(n, 0, 255) }));
+  };
+  const updateHsl = (channel: keyof Hsl, raw: string) => {
+    const n = parseFloat(raw);
+    if (Number.isNaN(n)) return;
+    const next = {
+      ...hsl,
+      [channel]: channel === "h" ? clamp(n, 0, 360) : clamp(n, 0, 100) / 100,
+    };
+    setHsv(rgbToHsv(hslToRgb(next)));
+  };
+  const updateHsb = (channel: keyof Hsv, raw: string) => {
+    const n = parseFloat(raw);
+    if (Number.isNaN(n)) return;
+    setHsv((c) => ({
+      ...c,
+      [channel]: channel === "h" ? clamp(n, 0, 360) : clamp(n, 0, 100) / 100,
+    }));
+  };
+  const onHexInput = (raw: string) => {
+    const clean = raw.replace(/[^0-9a-f]/gi, "").slice(0, 6).toUpperCase();
+    setHexText(clean);
+    const parsed = parseHexInput(clean);
+    if (parsed) setHsv(rgbToHsv(parsed));
+  };
+  const openModePicker = async () => {
+    const next = modeRef.current ? await openNativeDropdown(modeRef.current, mode, ["HEX", "RGB", "HSL", "HSB"], "chip") : null;
+    if (next === "HEX" || next === "RGB" || next === "HSL" || next === "HSB") setMode(next);
+  };
+  const commit = () => void send(outHex);
 
   return (
-    <div className="native-color-window">
+    <div className="native-color-window" onKeyDown={(e) => { if (e.key === "Enter") commit(); }}>
       <div
         className="native-color-sv"
         style={{ background: `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, ${hue})` }}
@@ -667,10 +773,56 @@ function NativeColorPicker({ value, send }: { value: string; send: (value?: stri
       >
         <span className="native-color-hue-thumb" style={{ left: `${(hsv.h / 360) * 100}%` }} />
       </div>
+      <div className="native-color-input-row">
+        <button ref={modeRef} type="button" className="native-color-mode" onClick={() => void openModePicker()}>{mode}</button>
+        {mode === "HEX" ? (
+          <div className="native-color-input-group native-color-input-group-hex">
+            <input
+              className="native-color-field native-color-field-hex"
+              value={hexText}
+              spellCheck={false}
+              onFocus={() => setEditingHex(true)}
+              onBlur={() => { setEditingHex(false); setHexText(hex.slice(1).toUpperCase()); }}
+              onChange={(e) => onHexInput(e.target.value)}
+            />
+            <input
+              className="native-color-field native-color-field-alpha"
+              value={Math.round(alpha * 100)}
+              inputMode="numeric"
+              onChange={(e) => updateAlpha(e.target.value)}
+            />
+            <span className="native-color-unit">%</span>
+          </div>
+        ) : mode === "RGB" ? (
+          <div className="native-color-input-group native-color-input-group-quad">
+            <input className="native-color-field" value={Math.round(rgb.r)} inputMode="numeric" onChange={(e) => updateRgb("r", e.target.value)} />
+            <input className="native-color-field" value={Math.round(rgb.g)} inputMode="numeric" onChange={(e) => updateRgb("g", e.target.value)} />
+            <input className="native-color-field" value={Math.round(rgb.b)} inputMode="numeric" onChange={(e) => updateRgb("b", e.target.value)} />
+            <input className="native-color-field native-color-field-alpha" value={Math.round(alpha * 100)} inputMode="numeric" onChange={(e) => updateAlpha(e.target.value)} />
+            <span className="native-color-unit">%</span>
+          </div>
+        ) : mode === "HSL" ? (
+          <div className="native-color-input-group native-color-input-group-quad">
+            <input className="native-color-field" value={Math.round(hsl.h)} inputMode="numeric" onChange={(e) => updateHsl("h", e.target.value)} />
+            <input className="native-color-field" value={Math.round(hsl.s * 100)} inputMode="numeric" onChange={(e) => updateHsl("s", e.target.value)} />
+            <input className="native-color-field" value={Math.round(hsl.l * 100)} inputMode="numeric" onChange={(e) => updateHsl("l", e.target.value)} />
+            <input className="native-color-field native-color-field-alpha" value={Math.round(alpha * 100)} inputMode="numeric" onChange={(e) => updateAlpha(e.target.value)} />
+            <span className="native-color-unit">%</span>
+          </div>
+        ) : (
+          <div className="native-color-input-group native-color-input-group-quad">
+            <input className="native-color-field" value={Math.round(hsv.h)} inputMode="numeric" onChange={(e) => updateHsb("h", e.target.value)} />
+            <input className="native-color-field" value={Math.round(hsv.s * 100)} inputMode="numeric" onChange={(e) => updateHsb("s", e.target.value)} />
+            <input className="native-color-field" value={Math.round(hsv.v * 100)} inputMode="numeric" onChange={(e) => updateHsb("v", e.target.value)} />
+            <input className="native-color-field native-color-field-alpha" value={Math.round(alpha * 100)} inputMode="numeric" onChange={(e) => updateAlpha(e.target.value)} />
+            <span className="native-color-unit">%</span>
+          </div>
+        )}
+      </div>
       <div className="native-color-footer">
-        <span className="native-color-swatch" style={{ background: hex }} />
-        <span className="native-color-hex">{hex.toUpperCase()}</span>
-        <button className="native-color-button" onClick={() => void send(hex)}>Done</button>
+        <span className="native-color-swatch" style={{ background: outHex }} />
+        <span className="native-color-hex">{outHex.toUpperCase()}</span>
+        <button className="native-color-button" onClick={commit}>Done</button>
       </div>
     </div>
   );
@@ -723,7 +875,7 @@ export function PopupWindow() {
     return <div className="native-tooltip-window">{payload.text}</div>;
   }
   if (payload.kind === "color") {
-    return <NativeColorPicker value={payload.value} send={send} />;
+    return <NativeColorPicker value={payload.value} alpha={payload.alpha} send={send} />;
   }
   if (payload.kind === "contextMenu") {
     return <NativeContextMenu items={payload.items} send={send} />;

@@ -244,15 +244,19 @@ body,
   gap: 8px;
   width: 100vw;
   height: 100vh;
-  padding: 10px;
+  padding: 10px 12px;
+  overflow: hidden;
 }
 
 .native-color-sv {
   position: relative;
-  height: 118px;
+  flex: none;
+  width: 100%;
+  aspect-ratio: 1 / 1;
   border-radius: 8px;
   box-shadow: inset 0 0 0 1px var(--native-popover-line);
   cursor: crosshair;
+  overflow: hidden;
 }
 
 .native-color-sv-thumb,
@@ -284,6 +288,99 @@ body,
   width: 8px;
   height: 18px;
   border-radius: 9999px;
+}
+
+.native-color-input-row {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+
+.native-color-mode {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 28px;
+  border-radius: 7px;
+  padding: 0 7px;
+  background: var(--native-popover-active);
+  color: var(--native-popover-tx);
+  box-shadow: inset 0 0 0 1px var(--native-popover-line);
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+}
+
+.native-color-mode::after {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--native-popover-tx-2);
+}
+
+.native-color-mode:hover {
+  background: var(--native-popover-hover);
+}
+
+.native-color-input-group {
+  display: grid;
+  position: relative;
+  height: 28px;
+  overflow: hidden;
+  border-radius: 7px;
+  background: var(--native-popover-active);
+  box-shadow: inset 0 0 0 1px var(--native-popover-line);
+}
+
+.native-color-input-group-hex {
+  grid-template-columns: minmax(0, 1fr) 38px 18px;
+}
+
+.native-color-input-group-quad {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) 36px 18px;
+}
+
+.native-color-field {
+  min-width: 0;
+  height: 28px;
+  padding: 0 5px;
+  border-left: 1px solid var(--native-popover-line);
+  background: transparent;
+  color: var(--native-popover-tx);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  text-align: center;
+}
+
+.native-color-field:first-child {
+  border-left: 0;
+}
+
+.native-color-field-hex {
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.native-color-field-alpha {
+  text-align: right;
+  padding-right: 4px;
+}
+
+.native-color-unit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  border-left: 1px solid var(--native-popover-line);
+  color: var(--native-popover-tx-2);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .native-color-footer {

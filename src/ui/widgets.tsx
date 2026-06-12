@@ -104,7 +104,7 @@ const colorFromHex = (hex: string, alpha: number): IcColor => ({
   r: parseInt(hex.slice(1, 3), 16) / 255,
   g: parseInt(hex.slice(3, 5), 16) / 255,
   b: parseInt(hex.slice(5, 7), 16) / 255,
-  a: alpha,
+  a: /^[#][0-9a-f]{8}$/i.test(hex) ? parseInt(hex.slice(7, 9), 16) / 255 : alpha,
 });
 
 export function ColorWell({ color, onChange }: { color: IcColor; onChange: (c: IcColor) => void }) {
@@ -116,7 +116,7 @@ export function ColorWell({ color, onChange }: { color: IcColor; onChange: (c: I
       className="w-[22px] h-[22px] rounded-[6px] border border-[color:var(--line)] cursor-pointer shadow-inner"
       style={{ background: hex }}
       onClick={async () => {
-        const next = ref.current ? await openNativeColorPicker(ref.current, hex) : null;
+        const next = ref.current ? await openNativeColorPicker(ref.current, hex, color.a) : null;
         if (next) onChange(colorFromHex(next, color.a));
       }}
     />

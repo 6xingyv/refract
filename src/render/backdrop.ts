@@ -28,7 +28,7 @@ export function backdropCss(b: BackdropSpec): string {
 /** Whether the backdrop is dark enough that panels should switch to light ink. */
 export function isDarkBackdrop(b: BackdropSpec): boolean {
   if (b.kind === "image") return true; // the gradient presets read as mid/dark behind UI
-  const m = /^#?([0-9a-f]{6})$/i.exec(b.color.trim());
+  const m = /^#?([0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(b.color.trim());
   if (!m) return false;
   const n = parseInt(m[1], 16);
   const lum = (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
