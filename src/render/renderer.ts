@@ -1,5 +1,5 @@
 // The glass pass graph - browser WebGPU port of WgpuRenderEngine.renderOnGpu.
-// alphaShape -> JFA -> SDF -> sdf_blur -> distance_gradient ; background blur ; shadow ; glass/color/highlight ; composite.
+// alphaShape -> JFA -> SDF (+ smoothed SDF normals) -> distance_gradient ; background blur ; shadow ; glass/color/highlight ; composite.
 import { Gpu, Format, BindKind, type Tex } from "./gpu";
 import { patch } from "./uniforms";
 
@@ -158,7 +158,7 @@ export class Renderer {
     g.pass(this.pl("sdf_blur", F16, ["U", "T", "S"]), sdfS, uni(0, 0, 1), [sdfH], samp, enc);
 
     const dgTex = g.texture(n, n, F16, true, persistent);
-    g.pass(this.pl("distance_gradient", F16, ["U", "T", "S"]), dgTex, uni(), [sdfS], samp, enc);
+    g.pass(this.pl("distance_gradient", F16, ["U", "T", "T", "S"]), dgTex, uni(), [sdfTex, sdfS], samp, enc);
 
     return { key, shapeTex, seedTex: seedSrc, sdfTex, dgTex, owned: [shapeTex, seedSrc, seedDst, sdfTex, dgTex] };
   }
