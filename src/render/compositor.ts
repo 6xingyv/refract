@@ -15,6 +15,19 @@ export interface AssetEntry { name: string; dataUrl: string }
 /** Appearance render mode derived from the previewed rendition's appearance code. */
 interface AppearanceMode { monoFamily: boolean; tinted: boolean; hasBackdrop: boolean }
 interface ShapeCacheEntry { data: ImageData; sampled: IcColor | null; bounds: ShapeBounds }
+interface LayerDrawItem { kind: "layer"; group: Group; layer: Layer; shape: ImageData }
+interface CombinedPart { layer: Layer; shape: ImageData }
+interface CombinedDrawItem {
+  kind: "combined";
+  group: Group;
+  layer: Layer;
+  shape: ImageData;
+  color: ImageData;
+  shapeKey: string;
+  bounds: ShapeBounds;
+  clearBg: boolean;
+}
+type DrawItem = LayerDrawItem | CombinedDrawItem;
 
 export class AssetStore {
   private images = new Map<string, HTMLImageElement>();
@@ -150,6 +163,117 @@ export class Compositor {
     return group.glassEnabled && !!this.renderer && (ap.monoFamily ? ap.hasBackdrop : layer.isGlass);
   }
 
+  private glassLayerContributesToCombined(group: Group, layer: Layer) {
+    return group.glassEnabled && !!this.renderer && layer.isGlass;
+  }
+
+  private glassUniformInputs(doc: IconDocument, group: Group, layer: Layer, ap: AppearanceMode, clearBg: boolean) {
+    const g2 = clearBg ? { ...group, translucency: { enabled: true, value: 1 }, blurMaterial: { enabled: false, strength: 0 } } : group;
+    const layerU = clearBg ? { ...layer, isGlass: true, fill: { ...layer.fill, kind: "none" as const } } : layer;
+    const docU = ap.monoFamily ? ({ ...doc, previewRendition: (ap.tinted ? "TintedLight" : "Mono") as Rendition }) : doc;
+    return { docU, g2, layerU };
+  }
+
+  private buildDrawItems(doc: IconDocument, size: number, slot: string | null, ap: AppearanceMode): DrawItem[] {
+    const drawItems: DrawItem[] = [];
+    for (const groupRaw of [...doc.composition.groups].reverse()) {
+      const group = resolveGroup(groupRaw, slot, doc.previewPlatform);
+      if (group.isHidden) continue;
+
+      let combinedRun: CombinedPart[] = [];
+      let runClearBg = false;
+      const flushCombinedRun = () => {
+        if (!combinedRun.length) return;
+        drawItems.push(this.makeCombinedItem(doc, group, combinedRun, size, runClearBg));
+        combinedRun = [];
+      };
+
+      for (const layerRaw of [...group.layers].reverse()) {
+        const layer = resolveLayer(layerRaw, slot, doc.previewPlatform);
+        if (layer.isHidden) continue;
+        const shape = this.rasterizeShape(layer, size);
+        const renderGlass = this.glassLayerOn(group, layer, ap);
+        const clearBg = ap.monoFamily && !layer.isGlass;
+        const combine = group.lighting === "combined" && this.glassLayerContributesToCombined(group, layer);
+
+        if (combine) {
+          if (combinedRun.length && runClearBg !== clearBg) flushCombinedRun();
+          runClearBg = clearBg;
+          combinedRun.push({ layer, shape });
+        } else {
+          flushCombinedRun();
+          drawItems.push({ kind: "layer", group, layer, shape });
+        }
+      }
+      flushCombinedRun();
+    }
+    return drawItems;
+  }
+
+  private makeCombinedItem(doc: IconDocument, group: Group, parts: CombinedPart[], size: number, clearBg: boolean): CombinedDrawItem {
+    const alphaCanvas = tmpCanvas(size);
+    const alphaCtx = alphaCanvas.getContext("2d")!;
+    const colorCanvas = tmpCanvas(size);
+    const colorCtx = colorCanvas.getContext("2d")!;
+    const dark = RENDITIONS[doc.previewRendition].dark;
+
+    for (const { layer, shape } of parts) {
+      const shapeCanvas = imageToCanvas(shape);
+      alphaCtx.save();
+      applyLayerTransform(alphaCtx, group, layer, size);
+      alphaCtx.globalAlpha = layer.opacity;
+      alphaCtx.drawImage(shapeCanvas, 0, 0);
+      alphaCtx.restore();
+
+      const colorShape = clearBg ? transparentShapeColor(shape) : glassColorShape(shape, layer, dark);
+      colorCtx.save();
+      applyLayerTransform(colorCtx, group, layer, size);
+      colorCtx.globalAlpha = layer.opacity;
+      colorCtx.globalCompositeOperation = blendOp(layer.blendMode);
+      colorCtx.drawImage(imageToCanvas(colorShape), 0, 0);
+      colorCtx.restore();
+    }
+
+    const shape = alphaCtx.getImageData(0, 0, size, size);
+    const color = colorCtx.getImageData(0, 0, size, size);
+    const layer = {
+      ...parts[0].layer,
+      imageName: null,
+      isGlass: true,
+      fill: { ...parts[0].layer.fill, kind: "none" as const },
+      opacity: 1,
+      position: { x: 0, y: 0 },
+      scale: 1,
+      blendMode: "normal" as const,
+      specular: { ...group.specular, enabled: false },
+    };
+
+    return {
+      kind: "combined",
+      group,
+      layer,
+      shape,
+      color,
+      shapeKey: this.combinedShapeKey(doc, group, parts, size, clearBg),
+      bounds: shapeAlphaBounds(shape),
+      clearBg,
+    };
+  }
+
+  private combinedShapeKey(doc: IconDocument, group: Group, parts: CombinedPart[], size: number, clearBg: boolean) {
+    const partKey = parts.map(({ layer }) => ({
+      id: layer.id,
+      imageName: layer.imageName,
+      fill: layer.fill,
+      opacity: layer.opacity,
+      blendMode: layer.blendMode,
+      position: layer.position,
+      scale: layer.scale,
+      isGlass: layer.isGlass,
+    }));
+    return `combined:${this.assets.revision}:${doc.previewPlatform}:${doc.previewRendition}:${size}:${clearBg}:${group.id}:${group.position.x},${group.position.y},${group.scale}:${JSON.stringify(partKey)}`;
+  }
+
   /** Cheap per-layer preview thumbnail (asset image, or fill-tinted placeholder); no glass/bg/chiclet. */
   renderLayerThumb(layer: Layer, size: number): HTMLCanvasElement {
     const shape = this.rasterizeShape(layer, size);
@@ -187,16 +311,7 @@ export class Compositor {
       paintBackground(ctx, doc, size, slot);
     }
 
-    const drawItems: { group: Group; layer: Layer; shape: ImageData }[] = [];
-    for (const groupRaw of [...doc.composition.groups].reverse()) {
-      const group = resolveGroup(groupRaw, slot, doc.previewPlatform);
-      if (group.isHidden) continue;
-      for (const layerRaw of [...group.layers].reverse()) {
-        const layer = resolveLayer(layerRaw, slot, doc.previewPlatform);
-        if (layer.isHidden) continue;
-        drawItems.push({ group, layer, shape: this.rasterizeShape(layer, size) });
-      }
-    }
+    const drawItems = this.buildDrawItems(doc, size, slot, ap);
     if (this.renderer) {
       const prepares: {
         shape: Uint8Array<ArrayBuffer>;
@@ -205,18 +320,18 @@ export class Compositor {
         shapeKey: string;
       }[] = [];
       for (const item of drawItems) {
-        if (!this.glassLayerOn(item.group, item.layer, ap)) continue;
-        const sampled = this.sampledShapeColor(item.layer, size, item.shape);
-        const clearBg = ap.monoFamily && !item.layer.isGlass;
-        const g2 = clearBg ? { ...item.group, translucency: { enabled: true, value: 1 }, blurMaterial: { enabled: false, strength: 0 } } : item.group;
-        const layerU = clearBg ? { ...item.layer, isGlass: true, fill: { ...item.layer.fill, kind: "none" as const } } : item.layer;
-        const docU = ap.monoFamily ? ({ ...doc, previewRendition: (ap.tinted ? "TintedLight" : "Mono") as Rendition }) : doc;
-        const u = buildUniforms(size, docU, g2, layerU, sampled, layerU.imageName != null, this.shapeBounds(item.layer, size, item.shape));
+        if (item.kind === "layer" && !this.glassLayerOn(item.group, item.layer, ap)) continue;
+        const clearBg = item.kind === "combined" ? item.clearBg : ap.monoFamily && !item.layer.isGlass;
+        const { docU, g2, layerU } = this.glassUniformInputs(doc, item.group, item.layer, ap, clearBg);
+        const sampled = item.kind === "combined" ? null : this.sampledShapeColor(item.layer, size, item.shape);
+        const usesAssetColor = item.kind === "combined" ? true : layerU.imageName != null;
+        const bounds = item.kind === "combined" ? item.bounds : this.shapeBounds(item.layer, size, item.shape);
+        const u = buildUniforms(size, docU, g2, layerU, sampled, usesAssetColor, bounds);
         prepares.push({
           shape: new Uint8Array(item.shape.data.buffer),
           size,
           uniforms: u,
-          shapeKey: this.shapeKey(item.layer, size),
+          shapeKey: item.kind === "combined" ? item.shapeKey : this.shapeKey(item.layer, size),
         });
       }
       if (prepares.length) this.renderer.prepareShapes(prepares);
@@ -226,7 +341,8 @@ export class Compositor {
     // independent per layer; this loop remains serial because each glass layer samples the pixels
     // already composited below it.
     for (const item of drawItems) {
-      await this.drawLayer(ctx, doc, item.group, item.layer, item.shape, size, ap);
+      if (item.kind === "combined") await this.drawCombined(ctx, doc, item, size, ap);
+      else await this.drawLayer(ctx, doc, item.group, item.layer, item.shape, size, ap);
     }
 
     // Container: mask to the chiclet shape, then a clean continuous rim. The per-layer glass already
@@ -267,8 +383,10 @@ export class Compositor {
     else { squircle(sx, pad, pad, size, size, size * p.cornerRadiusPct); sx.fill(); }
     const bc = tmpCanvas(ps); const bx = bc.getContext("2d")!;
     paintBackdrop(bx, ps, ps, backdrop); // the only thing refracted is the backdrop
+    const chicletShape = new Uint8Array(sx.getImageData(0, 0, ps, ps).data.buffer);
     const out = await this.renderer!.render(
-      new Uint8Array(sx.getImageData(0, 0, ps, ps).data.buffer),
+      chicletShape,
+      chicletShape,
       new Uint8Array(bx.getImageData(0, 0, ps, ps).data.buffer),
       ps, chicletUniforms(ps, doc), `chiclet:${doc.previewPlatform}:${ps}`,
     );
@@ -325,11 +443,10 @@ export class Compositor {
       // blur, no colour body — so it refracts the backdrop. Real glass layers keep their blur and
       // translucency. The appearance code maps everything to greyscale (Mono) / greyscale x tint (Tinted).
       const clearBg = ap.monoFamily && !layer.isGlass;
-      const g2 = clearBg ? { ...group, translucency: { enabled: true, value: 1 }, blurMaterial: { enabled: false, strength: 0 } } : group;
-      const layerU = clearBg ? { ...layer, isGlass: true, fill: { ...layer.fill, kind: "none" as const } } : layer;
-      const docU = ap.monoFamily ? ({ ...doc, previewRendition: (ap.tinted ? "TintedLight" : "Mono") as Rendition }) : doc;
+      const { docU, g2, layerU } = this.glassUniformInputs(doc, group, layer, ap, clearBg);
       const u = buildUniforms(size, docU, g2, layerU, sampled, layerU.imageName != null, this.shapeBounds(layer, size, shapeData));
-      const out = await this.renderer!.render(new Uint8Array(shapeData.data.buffer), new Uint8Array(bg.data.buffer), size, u, this.shapeKey(layer, size));
+      const shapeBytes = new Uint8Array(shapeData.data.buffer);
+      const out = await this.renderer!.render(shapeBytes, shapeBytes, new Uint8Array(bg.data.buffer), size, u, this.shapeKey(layer, size));
       layerCanvas = imageToCanvas(new ImageData(out, size, size));
     } else if (ap.monoFamily) {
       // no-WebGPU fallback: mono = white; tinted = the tint colour (whole icon)
@@ -342,14 +459,28 @@ export class Compositor {
         : imageToCanvas(fillShape(shapeData, layer.fill, RENDITIONS[doc.previewRendition].dark));
     }
     ctx.save();
-    const k = size / 1024;
-    const cx = size / 2, cy = size / 2;
-    ctx.translate((group.position.x + layer.position.x) * k, (group.position.y + layer.position.y) * k);
-    ctx.translate(cx, cy);
-    ctx.scale(group.scale * layer.scale, group.scale * layer.scale);
-    ctx.translate(-cx, -cy);
+    applyLayerTransform(ctx, group, layer, size);
     ctx.globalAlpha = layer.opacity * group.opacity;
     ctx.globalCompositeOperation = blendOp(layer.blendMode);
+    ctx.drawImage(layerCanvas, 0, 0);
+    ctx.restore();
+  }
+
+  private async drawCombined(ctx: CanvasRenderingContext2D, doc: IconDocument, item: CombinedDrawItem, size: number, ap: AppearanceMode) {
+    const bg = ctx.getImageData(0, 0, size, size);
+    const { docU, g2, layerU } = this.glassUniformInputs(doc, item.group, item.layer, ap, item.clearBg);
+    const u = buildUniforms(size, docU, g2, layerU, null, true, item.bounds);
+    const out = await this.renderer!.render(
+      new Uint8Array(item.shape.data.buffer),
+      new Uint8Array(item.color.data.buffer),
+      new Uint8Array(bg.data.buffer),
+      size,
+      u,
+      item.shapeKey,
+    );
+    const layerCanvas = imageToCanvas(new ImageData(out, size, size));
+    ctx.save();
+    ctx.globalAlpha = item.group.opacity;
     ctx.drawImage(layerCanvas, 0, 0);
     ctx.restore();
   }
@@ -360,6 +491,27 @@ function imageToCanvas(data: ImageData): HTMLCanvasElement {
   const c = tmpCanvas(data.width);
   c.getContext("2d")!.putImageData(data, 0, 0);
   return c;
+}
+
+function applyLayerTransform(ctx: CanvasRenderingContext2D, group: Group, layer: Layer, size: number) {
+  const k = size / 1024;
+  const cx = size / 2, cy = size / 2;
+  ctx.translate((group.position.x + layer.position.x) * k, (group.position.y + layer.position.y) * k);
+  ctx.translate(cx, cy);
+  ctx.scale(group.scale * layer.scale, group.scale * layer.scale);
+  ctx.translate(-cx, -cy);
+}
+
+function transparentShapeColor(shape: ImageData): ImageData {
+  return new ImageData(shape.width, shape.height);
+}
+
+function glassColorShape(shape: ImageData, layer: Layer, dark: boolean): ImageData {
+  if (layer.imageName) return shape;
+  const out = fillShape(shape, layer.fill, dark);
+  if (layer.fill.kind === "none") return out;
+  for (let i = 3; i < out.data.length; i += 4) out.data[i] = Math.round(out.data[i] * 0.65);
+  return out;
 }
 
 /**

@@ -1,5 +1,5 @@
 // The glass pass graph - browser WebGPU port of WgpuRenderEngine.renderOnGpu.
-// JFA -> SDF -> sdf_blur -> distance_gradient ; background blur ; shadow ; glass/color/highlight ; composite.
+// alphaShape -> JFA -> SDF -> sdf_blur -> distance_gradient ; background blur ; shadow ; glass/color/highlight ; composite.
 import { Gpu, Format, BindKind, type Tex } from "./gpu";
 import { patch } from "./uniforms";
 
@@ -198,7 +198,7 @@ export class Renderer {
     return this.buildShapeResources(shape, size, u, null, enc);
   }
 
-  private shadowResources(shapeRes: ShapeResources, size: number, u: Float32Array<ArrayBuffer>, enc: GPUCommandEncoder, shapeKey?: string): Tex {
+  private shadowResources(shapeRes: ShapeResources, colorTex: Tex, size: number, u: Float32Array<ArrayBuffer>, enc: GPUCommandEncoder, shapeKey?: string): Tex {
     const key = this.shadowKey(shapeKey, u);
     const cached = key ? this.touchShadowResources(key) : null;
     if (cached) return cached.shadowTex;
@@ -209,7 +209,7 @@ export class Renderer {
     const persistent = key != null;
 
     const shadowSrcTex = g.texture(n, n, F16, true);
-    g.pass(this.pl("shadow_source", F16, ["U", "T", "T", "T"]), shadowSrcTex, uni(), [seedTex, shapeTex, sdfTex], undefined, enc);
+    g.pass(this.pl("shadow_source", F16, ["U", "T", "T", "T", "T"]), shadowSrcTex, uni(), [seedTex, shapeTex, sdfTex, colorTex], undefined, enc);
     const shH = g.texture(n, n, F16, true);
     g.pass(this.pl("shadow_blur", F16, ["U", "T", "S"]), shH, uni(0, 1, 0), [shadowSrcTex], samp, enc);
     const shV = g.texture(n, n, F16, true);
@@ -224,14 +224,15 @@ export class Renderer {
     return shadowTex;
   }
 
-  /** Render one glass layer. shape/bg are RGBA8 (length size*size*4). Returns RGBA8 result. */
-  async render(shape: Uint8Array<ArrayBuffer>, bg: Uint8Array<ArrayBuffer>, size: number, u: Float32Array<ArrayBuffer>, shapeKey?: string): Promise<Uint8ClampedArray<ArrayBuffer>> {
+  /** Render one glass layer/group. alphaShape/color/bg are RGBA8 (length size*size*4). Returns RGBA8 result. */
+  async render(alphaShape: Uint8Array<ArrayBuffer>, colorData: Uint8Array<ArrayBuffer>, bg: Uint8Array<ArrayBuffer>, size: number, u: Float32Array<ArrayBuffer>, shapeKey?: string): Promise<Uint8ClampedArray<ArrayBuffer>> {
     const g = this.gpu, n = size, samp = g.sampler();
     const uni = (step = 0, bx = 0, by = 0) => g.uniform(patch(u, step, bx, by));
     const enc = g.commandEncoder();
     try {
-      const shapeRes = this.shapeResources(shape, n, u, enc, shapeKey);
+      const shapeRes = this.shapeResources(alphaShape, n, u, enc, shapeKey);
       const { shapeTex, dgTex } = shapeRes;
+      const colorTex = g.texture(n, n, F8, false); g.upload(colorTex, colorData, n, n);
       const bgTex = g.texture(n, n, F8, false); g.upload(bgTex, bg, n, n);
 
       // frosted background blur (no-op when blurRadius<=0)
@@ -240,17 +241,17 @@ export class Renderer {
       const bgBlur = g.texture(n, n, F8, true);
       g.pass(this.pl("blur", F8, ["U", "T", "S"]), bgBlur, uni(0, 0, 1), [bgH], samp, enc);
 
-      const shadowTex = this.shadowResources(shapeRes, n, u, enc, shapeKey);
+      const shadowTex = this.shadowResources(shapeRes, colorTex, n, u, enc, shapeKey);
 
       const glass = g.texture(n, n, F16, true);
       g.pass(this.pl("glass_background", F16, ["U", "T", "T", "S"]), glass, uni(), [dgTex, bgBlur], samp, enc);
-      const color = g.texture(n, n, F16, true);
-      g.pass(this.pl("color_layer", F16, ["U", "T", "T", "S"]), color, uni(), [dgTex, shapeTex], samp, enc);
+      const colorLayerTex = g.texture(n, n, F16, true);
+      g.pass(this.pl("color_layer", F16, ["U", "T", "T", "S"]), colorLayerTex, uni(), [dgTex, colorTex], samp, enc);
       const highlight = g.texture(n, n, F16, true);
       g.pass(this.pl("glass_highlight", F16, ["U", "T", "S"]), highlight, uni(), [dgTex], samp, enc);
 
       const out = g.texture(n, n, F8, true);
-      g.pass(this.pl("composite", F8, ["U", "T", "T", "T", "T", "S"]), out, uni(), [shadowTex, glass, color, highlight], samp, enc);
+      g.pass(this.pl("composite", F8, ["U", "T", "T", "T", "T", "S"]), out, uni(), [shadowTex, glass, colorLayerTex, highlight], samp, enc);
 
       return await g.readback(out, n, n, enc);
     } finally {
