@@ -7,8 +7,13 @@ const POPOVER_LABEL_PREFIX: &str = "refract-popover-";
 
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+};
+
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{
+    NSPopUpMenuWindowLevel, NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior,
 };
 
 #[derive(Serialize)]
@@ -142,7 +147,39 @@ fn configure_popover_window_flags<R: tauri::Runtime>(window: &tauri::Window<R>) 
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn configure_popover_window_flags<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    if !window.label().starts_with(POPOVER_LABEL_PREFIX) {
+        return;
+    }
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+    if ns_window.is_null() {
+        return;
+    }
+
+    let ns_window = unsafe { &*(ns_window.cast::<NSWindow>()) };
+    let conflicting_behaviors = NSWindowCollectionBehavior::Managed
+        | NSWindowCollectionBehavior::Stationary
+        | NSWindowCollectionBehavior::ParticipatesInCycle
+        | NSWindowCollectionBehavior::FullScreenPrimary
+        | NSWindowCollectionBehavior::FullScreenNone;
+    let popover_behaviors = NSWindowCollectionBehavior::MoveToActiveSpace
+        | NSWindowCollectionBehavior::Transient
+        | NSWindowCollectionBehavior::IgnoresCycle
+        | NSWindowCollectionBehavior::FullScreenAuxiliary;
+
+    ns_window.setLevel(NSPopUpMenuWindowLevel);
+    ns_window.setCollectionBehavior(
+        (ns_window.collectionBehavior() & !conflicting_behaviors) | popover_behaviors,
+    );
+    ns_window.setHidesOnDeactivate(true);
+    ns_window.setExcludedFromWindowsMenu(true);
+    ns_window.setAnimationBehavior(NSWindowAnimationBehavior::None);
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn configure_popover_window_flags<R: tauri::Runtime>(_window: &tauri::Window<R>) {}
 
 fn popover_window_flags_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
