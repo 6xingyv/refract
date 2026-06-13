@@ -4,6 +4,8 @@ use std::fs;
 use std::path::PathBuf;
 
 const POPOVER_LABEL_PREFIX: &str = "refract-popover-";
+#[cfg(target_os = "macos")]
+const NS_VIEW_TAG_BLUR_VIEW: isize = 91376254;
 
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -12,8 +14,17 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 #[cfg(target_os = "macos")]
+use objc2::msg_send;
+
+#[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSPopUpMenuWindowLevel, NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior,
+    NSColor, NSPopUpMenuWindowLevel, NSWindow, NSWindowAnimationBehavior, NSWindowButton,
+    NSWindowCollectionBehavior, NSWindowStyleMask, NSWindowTitleVisibility,
+};
+
+#[cfg(target_os = "macos")]
+use window_vibrancy::{
+    apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
 };
 
 #[derive(Serialize)]
@@ -33,6 +44,11 @@ struct IconPackage {
 struct AssetIn {
     name: String,
     data: String, // base64
+}
+
+#[derive(Serialize)]
+struct NativePopoverMetrics {
+    radius: f64,
 }
 
 /// Read a `.icon` package directory: icon.json + Assets/*.
@@ -119,6 +135,49 @@ fn read_image_assets(paths: Vec<String>) -> Result<Vec<Asset>, String> {
     Ok(assets)
 }
 
+#[cfg(target_os = "macos")]
+fn popover_kind_from_label(label: &str) -> &str {
+    label.strip_prefix(POPOVER_LABEL_PREFIX).unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn popover_radius_for_kind(kind: &str) -> f64 {
+    match kind {
+        "dropdown" | "contextMenu" | "tooltip" => 8.0,
+        _ => 10.0,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn native_popover_radius<R: tauri::Runtime>(window: &tauri::Window<R>) -> Option<f64> {
+    let ns_window = window.ns_window().ok()?;
+    if ns_window.is_null() {
+        return None;
+    }
+    let ns_window = unsafe { &*(ns_window.cast::<NSWindow>()) };
+    let content_view = ns_window.contentView()?;
+    let blur_view = content_view.viewWithTag(NS_VIEW_TAG_BLUR_VIEW)?;
+    let radius: f64 = unsafe { msg_send![&*blur_view, cornerRadius] };
+    radius.is_finite().then_some(radius)
+}
+
+#[tauri::command]
+fn native_popover_metrics<R: tauri::Runtime>(window: tauri::Window<R>) -> NativePopoverMetrics {
+    #[cfg(target_os = "macos")]
+    {
+        let fallback = popover_radius_for_kind(popover_kind_from_label(window.label()));
+        return NativePopoverMetrics {
+            radius: native_popover_radius(&window).unwrap_or(fallback),
+        };
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        NativePopoverMetrics { radius: 6.0 }
+    }
+}
+
 #[cfg(windows)]
 fn configure_popover_window_flags<R: tauri::Runtime>(window: &tauri::Window<R>) {
     if !window.label().starts_with(POPOVER_LABEL_PREFIX) {
@@ -149,9 +208,22 @@ fn configure_popover_window_flags<R: tauri::Runtime>(window: &tauri::Window<R>) 
 
 #[cfg(target_os = "macos")]
 fn configure_popover_window_flags<R: tauri::Runtime>(window: &tauri::Window<R>) {
-    if !window.label().starts_with(POPOVER_LABEL_PREFIX) {
+    let label = window.label();
+    if !label.starts_with(POPOVER_LABEL_PREFIX) {
         return;
     }
+    let kind = popover_kind_from_label(label);
+    let (material, radius) = match kind {
+        "dropdown" | "contextMenu" => (NSVisualEffectMaterial::Menu, popover_radius_for_kind(kind)),
+        "tooltip" => (
+            NSVisualEffectMaterial::Tooltip,
+            popover_radius_for_kind(kind),
+        ),
+        _ => (
+            NSVisualEffectMaterial::Popover,
+            popover_radius_for_kind(kind),
+        ),
+    };
     let Ok(ns_window) = window.ns_window() else {
         return;
     };
@@ -160,6 +232,13 @@ fn configure_popover_window_flags<R: tauri::Runtime>(window: &tauri::Window<R>) 
     }
 
     let ns_window = unsafe { &*(ns_window.cast::<NSWindow>()) };
+    let native_popup_style = (ns_window.styleMask()
+        | NSWindowStyleMask::Titled
+        | NSWindowStyleMask::FullSizeContentView)
+        & !(NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Miniaturizable
+            | NSWindowStyleMask::Resizable);
+    ns_window.setStyleMask(native_popup_style);
     let conflicting_behaviors = NSWindowCollectionBehavior::Managed
         | NSWindowCollectionBehavior::Stationary
         | NSWindowCollectionBehavior::ParticipatesInCycle
@@ -177,13 +256,35 @@ fn configure_popover_window_flags<R: tauri::Runtime>(window: &tauri::Window<R>) 
     ns_window.setHidesOnDeactivate(true);
     ns_window.setExcludedFromWindowsMenu(true);
     ns_window.setAnimationBehavior(NSWindowAnimationBehavior::None);
+    ns_window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+    ns_window.setTitlebarAppearsTransparent(true);
+    ns_window.setOpaque(false);
+    ns_window.setBackgroundColor(Some(&NSColor::clearColor()));
+    ns_window.setHasShadow(true);
+    for button in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        if let Some(button) = ns_window.standardWindowButton(button) {
+            button.setHidden(true);
+        }
+    }
+    let _ = clear_vibrancy(window.clone());
+    let _ = apply_vibrancy(
+        window.clone(),
+        material,
+        Some(NSVisualEffectState::Active),
+        Some(radius),
+    );
+    ns_window.invalidateShadow();
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn configure_popover_window_flags<R: tauri::Runtime>(_window: &tauri::Window<R>) {}
 
-fn popover_window_flags_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
-    tauri::plugin::Builder::new("popover-window-flags")
+fn window_system_integration_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("window-system-integration")
         .on_window_ready(|window| configure_popover_window_flags(&window))
         .on_webview_ready(|webview| configure_popover_window_flags(&webview.window()))
         .build()
@@ -192,14 +293,15 @@ fn popover_window_flags_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugi
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(popover_window_flags_plugin())
+        .plugin(window_system_integration_plugin())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             read_icon,
             save_icon,
             export_pngs,
-            read_image_assets
+            read_image_assets,
+            native_popover_metrics
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -32,6 +32,8 @@
   --native-popover-line: rgba(0, 0, 0, 0.11);
   --native-popover-hover: rgba(0, 0, 0, 0.07);
   --native-popover-active: rgba(255, 255, 255, 0.70);
+  --native-popover-shadow: rgba(0, 0, 0, 0.16);
+  --native-popover-option-radius: 6px;
 }
 
 .ui-dark {
@@ -59,6 +61,7 @@
   --native-popover-line: rgba(255, 255, 255, 0.15);
   --native-popover-hover: rgba(255, 255, 255, 0.11);
   --native-popover-active: rgba(255, 255, 255, 0.20);
+  --native-popover-shadow: rgba(0, 0, 0, 0.32);
 }
 
 *[data-tauri-drag-region] {
@@ -179,9 +182,18 @@ body,
 
 .native-dropdown-window,
 .native-wallpaper-window,
-.native-context-menu-window {
+.native-context-menu-window,
+.native-color-window,
+.native-tooltip-window {
   width: 100vw;
   height: 100vh;
+  overflow: hidden;
+  border: 1px solid var(--native-popover-line);
+  border-radius: 10px;
+  background: var(--native-popover-bg);
+  box-shadow: 0 8px 28px var(--native-popover-shadow);
+  -webkit-backdrop-filter: blur(28px) saturate(1.45);
+  backdrop-filter: blur(28px) saturate(1.45);
 }
 
 .native-dropdown-window,
@@ -197,11 +209,16 @@ body,
 .native-context-menu-option {
   min-height: 24px;
   padding: 0 9px;
-  border-radius: 6px;
+  border-radius: var(--native-popover-option-radius);
   color: var(--native-popover-tx-2);
   font-size: 12px;
   text-align: left;
   white-space: nowrap;
+}
+
+.native-popover-mac .native-dropdown-option,
+.native-popover-mac .native-context-menu-option {
+  border-radius: var(--native-popover-option-radius);
 }
 
 .native-dropdown-option:hover,
@@ -242,10 +259,7 @@ body,
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 100vw;
-  height: 100vh;
   padding: 10px 12px;
-  overflow: hidden;
 }
 
 .native-color-sv {
@@ -426,14 +440,25 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 100vw;
-  height: 100vh;
-  overflow: hidden;
   padding: 0;
+  border-radius: 8px;
   color: var(--native-popover-tx);
   font-size: 11px;
   line-height: 16px;
   white-space: nowrap;
+}
+
+.native-popover-mac .native-dropdown-window,
+.native-popover-mac .native-wallpaper-window,
+.native-popover-mac .native-context-menu-window,
+.native-popover-mac .native-color-window,
+.native-popover-mac .native-tooltip-window {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .window-control {

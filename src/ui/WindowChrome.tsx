@@ -18,7 +18,7 @@ const withCurrentWindow = async (action: "minimize" | "toggleMaximize" | "close"
 };
 
 export function WindowChrome({ platform }: { platform: ChromePlatform }) {
-  if (platform === "mac") return <MacTrafficLights />;
+  if (platform === "mac") return null;
   return <DesktopWindowControls />;
 }
 
@@ -49,31 +49,6 @@ function DesktopWindowControls() {
       >
         <X size={16} />
       </button>
-    </div>
-  );
-}
-
-function MacTrafficLights() {
-  return (
-    <div className="absolute left-3.5 top-[15px] z-40 flex gap-2" data-tauri-no-drag>
-      <button
-        aria-label="Close"
-        data-tooltip="Close"
-        className="traffic-light traffic-light-close"
-        onClick={() => void withCurrentWindow("close")}
-      />
-      <button
-        aria-label="Minimize"
-        data-tooltip="Minimize"
-        className="traffic-light traffic-light-minimize"
-        onClick={() => void withCurrentWindow("minimize")}
-      />
-      <button
-        aria-label="Maximize"
-        data-tooltip="Maximize"
-        className="traffic-light traffic-light-maximize"
-        onClick={() => void withCurrentWindow("toggleMaximize")}
-      />
     </div>
   );
 }

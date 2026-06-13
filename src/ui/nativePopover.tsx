@@ -1,4 +1,5 @@
 import React from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { currentMonitor, Effect, EffectState, getCurrentWindow, LogicalPosition, LogicalSize, Window as TauriWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -23,6 +24,7 @@ export type PopupPayload =
 
 type PopupResult = { sourceId: string; value?: string | number; cancelled?: boolean };
 type PopupReady = { label: string };
+type NativePopoverMetrics = { radius: number };
 type Unlisten = () => void;
 type PopupSlot = {
   kind: PopoverKind;
@@ -34,6 +36,9 @@ type PopupSlot = {
 };
 
 const EDGE = 8;
+const POPUP_RADIUS = 10;
+const MENU_RADIUS = 8;
+const TOOLTIP_RADIUS = 8;
 const POPUP_KINDS: PopoverKind[] = ["tooltip", "dropdown", "wallpaper", "color", "contextMenu"];
 let serial = 0;
 let eventReady: Promise<void> | null = null;
@@ -49,6 +54,8 @@ const closedSources = new Set<string>();
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 const appIsDarkMode = () => window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
+const isMacPlatform = () => navigator.platform.toLowerCase().includes("mac") || navigator.userAgent.toLowerCase().includes("mac os");
+const isMenuKind = (kind: PopoverKind) => kind === "dropdown" || kind === "contextMenu";
 
 function sourceId(kind: PopoverKind) {
   serial += 1;
@@ -72,17 +79,23 @@ function hasActivePopover() {
   return [...slots.values()].some((slot) => slot.activeSourceId);
 }
 
-function popoverEffect() {
-  const isMac = navigator.platform.toLowerCase().includes("mac");
-  if (!isMac) {
+function popoverRadius(kind: PopoverKind) {
+  if (kind === "tooltip") return TOOLTIP_RADIUS;
+  if (kind === "dropdown" || kind === "contextMenu") return MENU_RADIUS;
+  return POPUP_RADIUS;
+}
+
+function popoverEffect(kind: PopoverKind) {
+  if (isMacPlatform()) {
     return {
-      effects: [Effect.Acrylic],
-      color: "#00000000",
+      effects: [kind === "tooltip" ? Effect.Tooltip : kind === "dropdown" || kind === "contextMenu" ? Effect.Menu : Effect.Popover],
+      state: EffectState.Active,
+      radius: popoverRadius(kind),
     };
   }
   return {
-    effects: [Effect.Popover],
-    state: EffectState.Active,
+    effects: [Effect.Acrylic],
+    color: "#00000000",
   };
 }
 
@@ -245,6 +258,7 @@ async function ensurePopoverSlot(kind: PopoverKind) {
     existing = null;
   }
   const parent = getCurrentWindow();
+  const effects = popoverEffect(kind);
   const win = existing ?? new WebviewWindow(label, {
     alwaysOnTop: true,
     backgroundColor: "#00000000",
@@ -262,10 +276,11 @@ async function ensurePopoverSlot(kind: PopoverKind) {
     url: popupUrl(kind),
     visible: false,
     width: 1,
-    windowEffects: popoverEffect(),
+    ...(effects ? { windowEffects: effects } : {}),
     x: 0,
     y: 0,
   });
+  await win.setEffects(effects).catch(() => {});
 
   const slot: PopupSlot = { kind, label, win, ready, activeSourceId: null, focusUnlisten: null };
   slots.set(kind, slot);
@@ -863,6 +878,33 @@ export function PopupWindow() {
   React.useEffect(() => {
     document.body.classList.toggle("native-popover-dark", !!payload?.dark);
   }, [payload?.dark]);
+
+  React.useEffect(() => {
+    document.body.classList.toggle("native-popover-mac", isMacPlatform());
+  }, []);
+
+  React.useEffect(() => {
+    const kind = payload?.kind ?? popupKind;
+    if (!kind || !isMacPlatform() || !isMenuKind(kind)) {
+      document.body.style.removeProperty("--native-popover-option-radius");
+      return;
+    }
+    let disposed = false;
+    void invoke<NativePopoverMetrics>("native_popover_metrics")
+      .then(({ radius }) => {
+        if (disposed) return;
+        const menu = document.querySelector<HTMLElement>(".native-dropdown-window, .native-context-menu-window");
+        const style = menu ? window.getComputedStyle(menu) : null;
+        const inset = style ? Math.max(parseFloat(style.paddingTop) || 0, parseFloat(style.paddingLeft) || 0) : 0;
+        document.body.style.setProperty("--native-popover-option-radius", `${Math.max(0, radius - inset)}px`);
+      })
+      .catch(() => {
+        if (!disposed) document.body.style.removeProperty("--native-popover-option-radius");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [payload?.kind, popupKind]);
 
   const send = async (value?: string | number) => {
     if (!payload) return;

@@ -2380,6 +2380,7 @@ name = "refract"
 version = "0.1.3"
 dependencies = [
  "base64 0.22.1",
+ "objc2",
  "objc2-app-kit",
  "serde",
  "serde_json",
@@ -2387,6 +2388,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
+ "window-vibrancy",
  "windows",
 ]
 
