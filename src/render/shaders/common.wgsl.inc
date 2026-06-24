@@ -47,6 +47,7 @@ fn assetColorOn() -> f32 { return P.flags.z; }
 fn layerColorShadowOn() -> f32 { return P.flags.w; }
 fn shapeTop()     -> f32 { return P.shapeBounds.x; }
 fn shapeBottom()  -> f32 { return P.shapeBounds.y; }
+fn exportAlphaMode() -> f32 { return P._r11.x; }
 
 struct VsOut {
     @builtin(position) pos : vec4<f32>,

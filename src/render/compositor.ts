@@ -29,6 +29,13 @@ interface CombinedDrawItem {
 }
 type DrawItem = LayerDrawItem | CombinedDrawItem;
 
+export interface RenderOptions {
+  layer?: "combined" | "foreground" | "background";
+  clipChiclet?: boolean;
+  chicletHighlight?: boolean;
+  materialAlphaMask?: boolean;
+}
+
 export class AssetStore {
   private images = new Map<string, HTMLImageElement>();
   private version = 0;
@@ -283,10 +290,22 @@ export class Compositor {
     return c;
   }
 
-  async render(doc: IconDocument, size: number, slot: string | null = specSlot(doc.previewRendition), backdrop?: BackdropSpec): Promise<HTMLCanvasElement> {
+  async render(
+    doc: IconDocument,
+    size: number,
+    slot: string | null = specSlot(doc.previewRendition),
+    backdrop?: BackdropSpec,
+    options: RenderOptions = {},
+  ): Promise<HTMLCanvasElement> {
     const canvas = tmpCanvas(size);
     const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
     ctx.clearRect(0, 0, size, size);
+    const layer = options.layer ?? "combined";
+    const includeBackground = layer !== "foreground";
+    const includeForeground = layer !== "background";
+    const clipChiclet = options.clipChiclet ?? true;
+    const chicletHighlight = options.chicletHighlight ?? clipChiclet;
+    const materialAlphaMask = options.materialAlphaMask ?? false;
 
     // Mono/Tinted: the whole icon turns to clear glass; with a backdrop it refracts the canvas
     // background, and the system optionally tints the BACKGROUND while the foreground stays white.
@@ -300,8 +319,15 @@ export class Compositor {
     // Base. Default/Dark: paint the backdrop (the glass refracts it) + the composition fill.
     // Mono: paint a neutral mid-grey so the clear glass refracts grey (not black); the real backdrop
     // colour is applied at the very end via a plus-lighter/darker modulation so the icon blends in.
-    if (ap.monoFamily) {
-      if (ap.hasBackdrop) { ctx.fillStyle = "#808080"; ctx.fillRect(0, 0, size, size); }
+    if (!includeBackground) {
+      // A layered foreground export must retain a transparent base.
+    } else if (ap.monoFamily) {
+      if (layer === "background") {
+        paintBackground(ctx, doc, size, slot);
+      } else if (ap.hasBackdrop) {
+        ctx.fillStyle = "#808080";
+        ctx.fillRect(0, 0, size, size);
+      }
     } else {
       // Chiclet glass BODY = refract ONLY what's behind the glass (the backdrop) into a shaped slab.
       // The design (colour-tint) is painted ON TOP next, so it sits on the glass and is NOT refracted
@@ -311,8 +337,8 @@ export class Compositor {
       paintBackground(ctx, doc, size, slot);
     }
 
-    const drawItems = this.buildDrawItems(doc, size, slot, ap);
-    if (this.renderer) {
+    const drawItems = includeForeground ? this.buildDrawItems(doc, size, slot, ap) : [];
+    if (includeForeground && this.renderer) {
       const prepares: {
         shape: Uint8Array<ArrayBuffer>;
         size: number;
@@ -327,6 +353,7 @@ export class Compositor {
         const usesAssetColor = item.kind === "combined" ? true : layerU.imageName != null;
         const bounds = item.kind === "combined" ? item.bounds : this.shapeBounds(item.layer, size, item.shape);
         const u = buildUniforms(size, docU, g2, layerU, sampled, usesAssetColor, bounds);
+        if (materialAlphaMask) u[44] = 1;
         prepares.push({
           shape: new Uint8Array(item.shape.data.buffer),
           size,
@@ -341,15 +368,15 @@ export class Compositor {
     // independent per layer; this loop remains serial because each glass layer samples the pixels
     // already composited below it.
     for (const item of drawItems) {
-      if (item.kind === "combined") await this.drawCombined(ctx, doc, item, size, ap);
-      else await this.drawLayer(ctx, doc, item.group, item.layer, item.shape, size, ap);
+      if (item.kind === "combined") await this.drawCombined(ctx, doc, item, size, ap, materialAlphaMask);
+      else await this.drawLayer(ctx, doc, item.group, item.layer, item.shape, size, ap, materialAlphaMask);
     }
 
     // Container: mask to the chiclet shape, then a clean continuous rim. The per-layer glass already
     // refracts what's below it and carries each colour at the CORRECT position; a separate container
     // refraction displaced the whole colour layer relative to the rim, so it's removed.
-    applyChiclet(ctx, canvas, doc, size);
-    this.drawChicletRim(ctx, doc, size);
+    if (clipChiclet) applyChiclet(ctx, canvas, doc, size);
+    if (chicletHighlight && includeBackground) this.drawChicletRim(ctx, doc, size);
 
     // Mono (untinted): modulate the real backdrop by the icon's greyscale luminance (plus-lighter /
     // plus-darker) so it merges with the scene instead of reading as a flat black-and-white filter.
@@ -431,7 +458,16 @@ export class Compositor {
     ctx.restore();
   }
 
-  private async drawLayer(ctx: CanvasRenderingContext2D, doc: IconDocument, group: Group, layer: Layer, shapeData: ImageData, size: number, ap: AppearanceMode) {
+  private async drawLayer(
+    ctx: CanvasRenderingContext2D,
+    doc: IconDocument,
+    group: Group,
+    layer: Layer,
+    shapeData: ImageData,
+    size: number,
+    ap: AppearanceMode,
+    materialAlphaMask = false,
+  ) {
     let layerCanvas: HTMLCanvasElement;
     // Mono/Tinted (with a backdrop to refract): EVERY layer becomes clear glass, then the composite
     // maps it to greyscale (Mono, code 3) or greyscale x tint (Tinted, code 4). Non-mono: glass layers only.
@@ -445,6 +481,7 @@ export class Compositor {
       const clearBg = ap.monoFamily && !layer.isGlass;
       const { docU, g2, layerU } = this.glassUniformInputs(doc, group, layer, ap, clearBg);
       const u = buildUniforms(size, docU, g2, layerU, sampled, layerU.imageName != null, this.shapeBounds(layer, size, shapeData));
+      if (materialAlphaMask) u[44] = 1;
       const shapeBytes = new Uint8Array(shapeData.data.buffer);
       const out = await this.renderer!.render(shapeBytes, shapeBytes, new Uint8Array(bg.data.buffer), size, u, this.shapeKey(layer, size));
       layerCanvas = imageToCanvas(new ImageData(out, size, size));
@@ -466,10 +503,18 @@ export class Compositor {
     ctx.restore();
   }
 
-  private async drawCombined(ctx: CanvasRenderingContext2D, doc: IconDocument, item: CombinedDrawItem, size: number, ap: AppearanceMode) {
+  private async drawCombined(
+    ctx: CanvasRenderingContext2D,
+    doc: IconDocument,
+    item: CombinedDrawItem,
+    size: number,
+    ap: AppearanceMode,
+    materialAlphaMask = false,
+  ) {
     const bg = ctx.getImageData(0, 0, size, size);
     const { docU, g2, layerU } = this.glassUniformInputs(doc, item.group, item.layer, ap, item.clearBg);
     const u = buildUniforms(size, docU, g2, layerU, null, true, item.bounds);
+    if (materialAlphaMask) u[44] = 1;
     const out = await this.renderer!.render(
       new Uint8Array(item.shape.data.buffer),
       new Uint8Array(item.color.data.buffer),

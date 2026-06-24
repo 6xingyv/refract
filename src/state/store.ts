@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { IconDocument, Rendition, Platform, Appearance } from "../model/types";
-import { allLayers, slotOf, renditionOf } from "../model/types";
+import { allLayers, slotOf, renditionOf, specSlot } from "../model/types";
 
 const VARIANTS: Rendition[] = ["Default", "Dark", "Mono"];
 const PLATFORM_VARIANTS: Platform[] = ["iOS", "macOS", "watchOS"];
@@ -19,6 +19,7 @@ import {
 import { encodeIcon, decodeIcon } from "../model/io";
 import { Renderer } from "../render/renderer";
 import { Compositor, AssetStore } from "../render/compositor";
+import { extractForegroundLayer } from "../render/exportLayers";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -29,6 +30,12 @@ let initOnce: Promise<void> | null = null;
 type ImportAsset = { name: string; dataUrl: string };
 type EncodedAsset = { name: string; data: string };
 type HistorySnapshot = { doc: IconDocument; selectedId: number };
+
+export interface ExportOptions {
+  variants: Rendition[];
+  clipChiclet: boolean;
+  layered: boolean;
+}
 
 const isImportableAssetName = (name: string) => /\.(svg|png)$/i.test(name);
 const fileNameOf = (name: string) => name.split(/[\\/]/).pop() || name;
@@ -112,7 +119,7 @@ interface State {
   setDoc: (doc: IconDocument) => void;
   openIcon: () => Promise<void>;
   saveIcon: () => Promise<void>;
-  exportPng: () => Promise<void>;
+  exportPng: (options?: ExportOptions) => Promise<void>;
 }
 
 type RenderScope = "preview" | "all";
@@ -394,21 +401,79 @@ export const useStore = create<State>((set, get) => {
       }
     },
 
-    exportPng: async () => {
+    exportPng: async (options = {
+      variants: [renditionOf(get().appearance)],
+      clipChiclet: true,
+      layered: false,
+    }) => {
       await ensureCompositor((e) => set({ error: e }));
       if (!compositor) return;
+      if (!options.variants.length) return;
       const dir = await open({ directory: true, multiple: false, title: "Choose an export folder" });
       const folder = Array.isArray(dir) ? dir[0] : dir;
       if (!folder) return;
       const doc = get().doc;
-      const ap = get().appearance;
-      const slot = slotOf(ap);
-        const base = { ...doc, previewRendition: renditionOf(ap), lightAngleDeg: FIXED_RENDER_LIGHT_ANGLE };
       try {
         const files: { name: string; data: string }[] = [];
-        for (const p of doc.supportedPlatforms) {
-          const canvas = await compositor.render({ ...base, previewPlatform: p }, 1024, slot);
-          files.push({ name: `${doc.name}-${p}-${ap}.png`, data: canvas.toDataURL("image/png").split(",")[1] });
+        for (const variant of options.variants) {
+          const base = { ...doc, previewRendition: variant, lightAngleDeg: FIXED_RENDER_LIGHT_ANGLE };
+          const slot = specSlot(variant);
+          for (const p of doc.supportedPlatforms) {
+            const render = async (layer: "combined" | "foreground" | "background", suffix = "") => {
+              const canvas = await compositor!.render({ ...base, previewPlatform: p }, 1024, slot, undefined, {
+                layer,
+                clipChiclet: options.clipChiclet,
+                chicletHighlight: options.clipChiclet,
+              });
+              files.push({
+                name: `${doc.name}-${p}-${variant}${suffix}.png`,
+                data: canvas.toDataURL("image/png").split(",")[1],
+              });
+            };
+            if (options.layered) {
+              const renderOptions = {
+                clipChiclet: options.clipChiclet,
+                chicletHighlight: options.clipChiclet,
+              };
+              const combined = await compositor.render(
+                { ...base, previewPlatform: p },
+                1024,
+                slot,
+                undefined,
+                { ...renderOptions, layer: "combined" },
+              );
+              const background = await compositor.render(
+                { ...base, previewPlatform: p },
+                1024,
+                slot,
+                undefined,
+                { ...renderOptions, layer: "background" },
+              );
+              const foregroundMask = await compositor.render(
+                { ...base, previewPlatform: p },
+                1024,
+                slot,
+                undefined,
+                {
+                  layer: "foreground",
+                  clipChiclet: options.clipChiclet,
+                  chicletHighlight: false,
+                  materialAlphaMask: true,
+                },
+              );
+              const layers = extractForegroundLayer(combined, background, foregroundMask);
+              files.push({
+                name: `${doc.name}-${p}-${variant}-foreground.png`,
+                data: layers.foreground.toDataURL("image/png").split(",")[1],
+              });
+              files.push({
+                name: `${doc.name}-${p}-${variant}-background.png`,
+                data: layers.background.toDataURL("image/png").split(",")[1],
+              });
+            } else {
+              await render("combined");
+            }
+          }
         }
         await invoke("export_pngs", { dir: folder, files });
       } catch (e: any) {

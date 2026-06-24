@@ -184,6 +184,7 @@ body,
 .native-wallpaper-window,
 .native-context-menu-window,
 .native-color-window,
+.native-export-window,
 .native-tooltip-window {
   width: 100vw;
   height: 100vh;
@@ -260,6 +261,133 @@ body,
   flex-direction: column;
   gap: 8px;
   padding: 10px 12px;
+}
+
+.native-export-window {
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  color: var(--native-popover-tx);
+}
+
+.native-export-title {
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.native-export-section {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.native-export-section legend {
+  margin-bottom: 5px;
+  color: var(--native-popover-tx-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.native-export-variants {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 6px;
+}
+
+.native-export-check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 7px;
+  border-radius: 7px;
+  background: var(--native-popover-active);
+  color: var(--native-popover-tx);
+  font-size: 12px;
+}
+
+.native-export-check-row:hover {
+  background: var(--native-popover-hover);
+}
+
+.native-export-check-row input,
+.native-export-toggle-row input {
+  accent-color: #0a84ff;
+}
+
+.native-export-divider {
+  height: 1px;
+  margin: 11px 0 4px;
+  background: var(--native-popover-line);
+}
+
+.native-export-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  color: var(--native-popover-tx);
+}
+
+.native-export-toggle-row > span {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.native-export-toggle-row strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.native-export-toggle-row small {
+  color: var(--native-popover-tx-2);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.native-export-toggle-row input[role="switch"] {
+  width: 30px;
+  height: 17px;
+}
+
+.native-export-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: auto;
+}
+
+.native-export-button {
+  height: 27px;
+  min-width: 64px;
+  padding: 0 12px;
+  border-radius: 7px;
+  background: var(--native-popover-active);
+  color: var(--native-popover-tx);
+  font-size: 12px;
+}
+
+.native-export-button:hover:not(:disabled) {
+  background: var(--native-popover-hover);
+}
+
+.native-export-button:disabled {
+  opacity: 0.4;
+}
+
+.native-export-button-primary {
+  background: #0a84ff;
+  color: white;
+}
+
+.native-export-button-primary:hover:not(:disabled) {
+  background: #0077ed;
 }
 
 .native-color-sv {
@@ -452,6 +580,7 @@ body,
 .native-popover-mac .native-wallpaper-window,
 .native-popover-mac .native-context-menu-window,
 .native-popover-mac .native-color-window,
+.native-popover-mac .native-export-window,
 .native-popover-mac .native-tooltip-window {
   border: 0;
   border-radius: 0;

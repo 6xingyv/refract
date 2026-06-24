@@ -7,7 +7,7 @@ import { BG_PRESETS, presetCss } from "../render/backdrop";
 import gridSquare from "../assets/grid-square.png";
 import gridCircle from "../assets/grid-circle.png";
 import type { ChromePlatform } from "./WindowChrome";
-import { openNativeColorPicker, openNativeWallpaper } from "./nativePopover";
+import { openNativeColorPicker, openNativeExportDialog, openNativeWallpaper } from "./nativePopover";
 
 const SQUARE_PLATS: Platform[] = ["iOS", "macOS"];
 
@@ -39,7 +39,17 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
 
   const wallpaperRef = useRef<HTMLButtonElement>(null);
   const colorRef = useRef<HTMLButtonElement>(null);
+  const exportRef = useRef<HTMLSpanElement>(null);
   const setPlat = (p: Platform) => update((d) => ({ ...d, previewPlatform: p }));
+  const requestExport = async () => {
+    if (!exportRef.current) return;
+    const options = await openNativeExportDialog(exportRef.current, {
+      variants: [doc.previewRendition],
+      clipChiclet: true,
+      layered: false,
+    });
+    if (options) await exportPng(options);
+  };
 
   // bottom-left platform tiles: merge iOS+macOS into one square when squares are "shared".
   const supported = doc.supportedPlatforms;
@@ -65,7 +75,7 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
           <span className="text-[13px] font-semibold text-[color:var(--tx)] truncate">{doc.name}</span>
           <SmallBtn onClick={openIcon}><FolderOpen size={13} />Open</SmallBtn>
           <SmallBtn onClick={saveIcon}><Save size={13} />Save</SmallBtn>
-          <SmallBtn onClick={exportPng}><Download size={13} />Export</SmallBtn>
+          <span ref={exportRef}><SmallBtn onClick={() => void requestExport()}><Download size={13} />Export</SmallBtn></span>
 
           <div className="flex-1" />
         </div>

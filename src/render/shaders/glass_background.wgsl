@@ -18,5 +18,13 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
     let refr = in.uv - disp * normal * texel();
 
     let bg = textureSample(bgTex, samp, refr);
+    if (exportAlphaMode() > 0.5 && glassOn() > 0.5) {
+        let translucentPct = clamp(translucency(), 0.0, 1.0);
+        let bottomAlpha = 1.0 - translucentPct;
+        let shapeHeight = max(shapeBottom() - shapeTop(), texel().y);
+        let shapeY = clamp((in.uv.y - shapeTop()) / shapeHeight, 0.0, 1.0);
+        let materialAlpha = mix(1.0, bottomAlpha, shapeY);
+        return vec4<f32>(bg.rgb, cov * materialAlpha);
+    }
     return vec4<f32>(bg.rgb, cov * glassOn());
 }

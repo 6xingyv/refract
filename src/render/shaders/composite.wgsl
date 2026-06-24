@@ -26,6 +26,13 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
     // additive specular highlight
     col = vec4<f32>(col.rgb + hl.rgb, col.a);
 
+    if (exportAlphaMode() > 0.5 && glassOn() > 0.5) {
+        // For layered PNG export the refracted background is represented by
+        // the separate background image. Keep only the glass material density
+        // here instead of treating sampled background pixels as opaque.
+        col.a = max(sh.a, glass.a);
+    }
+
     let ap = appearance();
     let luma = dot(col.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     if (ap >= 4.5) {

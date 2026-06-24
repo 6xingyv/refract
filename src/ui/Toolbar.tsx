@@ -1,6 +1,8 @@
+import { useRef } from "react";
 import { useStore } from "../state/store";
 import type { Rendition } from "../model/types";
 import { PillButton } from "./widgets";
+import { openNativeExportDialog } from "./nativePopover";
 
 const RENDS: { id: Rendition; label: string }[] = [
   { id: "Default", label: "Light" },
@@ -20,6 +22,17 @@ export function Toolbar() {
   const openIcon = useStore((s) => s.openIcon);
   const saveIcon = useStore((s) => s.saveIcon);
   const exportPng = useStore((s) => s.exportPng);
+  const exportRef = useRef<HTMLSpanElement>(null);
+
+  const requestExport = async () => {
+    if (!exportRef.current) return;
+    const options = await openNativeExportDialog(exportRef.current, {
+      variants: [doc.previewRendition],
+      clipChiclet: true,
+      layered: false,
+    });
+    if (options) await exportPng(options);
+  };
 
   return (
     <div className="h-11 shrink-0 flex items-center gap-2 px-3">
@@ -59,7 +72,7 @@ export function Toolbar() {
       <div className="w-px h-5 bg-[color:var(--line)] mx-0.5" />
       <PillButton onClick={openIcon}>Open</PillButton>
       <PillButton onClick={saveIcon}>Save</PillButton>
-      <PillButton onClick={exportPng}>Export</PillButton>
+      <span ref={exportRef}><PillButton onClick={() => void requestExport()}>Export</PillButton></span>
     </div>
   );
 }

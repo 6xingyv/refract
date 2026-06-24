@@ -3,9 +3,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { currentMonitor, Effect, EffectState, getCurrentWindow, LogicalPosition, LogicalSize, Window as TauriWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import type { Rendition } from "../model/types";
 
 type Placement = "bottom-start" | "bottom-end" | "bottom" | "top-start" | "top-end" | "top";
-type PopoverKind = "dropdown" | "tooltip" | "wallpaper" | "color" | "contextMenu";
+type PopoverKind = "dropdown" | "tooltip" | "wallpaper" | "color" | "contextMenu" | "export";
+
+export type NativeExportOptions = {
+  variants: Rendition[];
+  clipChiclet: boolean;
+  layered: boolean;
+};
+
+type ExportVariantOption = { id: Rendition; label: string };
 
 export type NativeContextMenuItem = {
   id: string;
@@ -20,9 +29,11 @@ export type PopupPayload =
   | { kind: "tooltip"; sourceId: string; text: string; dark: boolean }
   | { kind: "wallpaper"; sourceId: string; selected: number; presets: string[]; dark: boolean }
   | { kind: "color"; sourceId: string; value: string; alpha?: number; dark: boolean }
-  | { kind: "contextMenu"; sourceId: string; items: NativeContextMenuItem[]; dark: boolean };
+  | { kind: "contextMenu"; sourceId: string; items: NativeContextMenuItem[]; dark: boolean }
+  | { kind: "export"; sourceId: string; options: ExportVariantOption[]; initial: NativeExportOptions; dark: boolean };
 
-type PopupResult = { sourceId: string; value?: string | number; cancelled?: boolean };
+type PopupValue = string | number | NativeExportOptions;
+type PopupResult = { sourceId: string; value?: PopupValue; cancelled?: boolean };
 type PopupReady = { label: string };
 type NativePopoverMetrics = { radius: number };
 type Unlisten = () => void;
@@ -39,12 +50,12 @@ const EDGE = 8;
 const POPUP_RADIUS = 10;
 const MENU_RADIUS = 8;
 const TOOLTIP_RADIUS = 8;
-const POPUP_KINDS: PopoverKind[] = ["tooltip", "dropdown", "wallpaper", "color", "contextMenu"];
+const POPUP_KINDS: PopoverKind[] = ["tooltip", "dropdown", "wallpaper", "color", "contextMenu", "export"];
 let serial = 0;
 let eventReady: Promise<void> | null = null;
 let readyEventReady: Promise<void> | null = null;
 let suppressBlurUntil = 0;
-const pending = new Map<string, (value: string | number | null) => void>();
+const pending = new Map<string, (value: PopupValue | null) => void>();
 const windows = new Map<string, WebviewWindow>();
 const slots = new Map<PopoverKind, PopupSlot>();
 const readyResolvers = new Map<string, () => void>();
@@ -122,6 +133,9 @@ function sizeFor(payload: PopupPayload, anchorWidth: number) {
   }
   if (payload.kind === "color") {
     return { width: 252, height: 334 };
+  }
+  if (payload.kind === "export") {
+    return { width: 328, height: 412 };
   }
   if (payload.kind === "contextMenu") {
     const maxLabel = payload.items.reduce((n, item) => Math.max(n, item.label.length), 0);
@@ -479,6 +493,29 @@ export async function openNativeContextMenu(clientX: number, clientY: number, it
   return new Promise<string | null>((resolve) => pending.set(id, (v) => resolve(typeof v === "string" ? v : null)));
 }
 
+export async function openNativeExportDialog(anchor: HTMLElement, initial: NativeExportOptions) {
+  await closeNativePopoversByKind("tooltip");
+  await destroyPopoverSlot("export");
+  const id = sourceId("export");
+  const dark = appIsDarkMode();
+  const options: ExportVariantOption[] = [
+    { id: "Default", label: "Default" },
+    { id: "Dark", label: "Dark" },
+    { id: "Light", label: "Light" },
+    { id: "Mono", label: "Mono" },
+    { id: "TintedLight", label: "Tinted Light" },
+    { id: "TintedDark", label: "Tinted Dark" },
+    { id: "ClearLight", label: "Clear Light" },
+    { id: "ClearDark", label: "Clear Dark" },
+  ];
+  const win = await openNativePopover(anchor, { kind: "export", sourceId: id, options, initial, dark }, "bottom-start");
+  if (!win) return null;
+  return new Promise<NativeExportOptions | null>((resolve) => pending.set(id, (v) => {
+    if (!v || typeof v !== "object") return resolve(null);
+    resolve(v as NativeExportOptions);
+  }));
+}
+
 export function NativeTooltipProvider() {
   const active = React.useRef<{ id: string; anchor: HTMLElement; ticket: number } | null>(null);
   const ticket = React.useRef(0);
@@ -678,7 +715,7 @@ function parseHexInput(text: string): Rgb | null {
   return hexToRgb(rgb);
 }
 
-function NativeContextMenu({ items, send }: { items: NativeContextMenuItem[]; send: (value?: string | number) => Promise<void> }) {
+function NativeContextMenu({ items, send }: { items: NativeContextMenuItem[]; send: (value?: PopupValue) => Promise<void> }) {
   return (
     <div className="native-context-menu-window" onContextMenu={(e) => e.preventDefault()}>
       {items.map((item) => (
@@ -698,7 +735,7 @@ function NativeContextMenu({ items, send }: { items: NativeContextMenuItem[]; se
   );
 }
 
-function NativeColorPicker({ value, alpha: initialAlpha, send }: { value: string; alpha?: number; send: (value?: string | number) => Promise<void> }) {
+function NativeColorPicker({ value, alpha: initialAlpha, send }: { value: string; alpha?: number; send: (value?: PopupValue) => Promise<void> }) {
   const modeRef = React.useRef<HTMLButtonElement>(null);
   const [hsv, setHsv] = React.useState(() => rgbToHsv(hexToRgb(value)));
   const [alpha, setAlpha] = React.useState(() => initialAlpha ?? hexToAlpha(value));
@@ -843,10 +880,84 @@ function NativeColorPicker({ value, alpha: initialAlpha, send }: { value: string
   );
 }
 
+function NativeExportDialog({
+  options,
+  initial,
+  send,
+}: {
+  options: ExportVariantOption[];
+  initial: NativeExportOptions;
+  send: (value?: PopupValue) => Promise<void>;
+}) {
+  const [variants, setVariants] = React.useState<Rendition[]>(initial.variants);
+  const [clipChiclet, setClipChiclet] = React.useState(initial.clipChiclet);
+  const [layered, setLayered] = React.useState(initial.layered);
+  const selected = new Set(variants);
+
+  const toggleVariant = (variant: Rendition) => {
+    setVariants((current) => current.includes(variant)
+      ? current.filter((item) => item !== variant)
+      : [...current, variant]);
+  };
+
+  return (
+    <div
+      className="native-export-window"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") void send();
+        if (e.key === "Enter" && variants.length) void send({ variants, clipChiclet, layered });
+      }}
+    >
+      <div className="native-export-title">Export icons</div>
+      <fieldset className="native-export-section">
+        <legend>Variants</legend>
+        <div className="native-export-variants">
+          {options.map((option) => (
+            <label key={option.id} className="native-export-check-row">
+              <input
+                type="checkbox"
+                checked={selected.has(option.id)}
+                onChange={() => toggleVariant(option.id)}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      <div className="native-export-divider" />
+      <label className="native-export-toggle-row">
+        <span>
+          <strong>Clip chiclet & add highlight</strong>
+          <small>Mask to the platform shape and render its rim highlight.</small>
+        </span>
+        <input type="checkbox" role="switch" checked={clipChiclet} onChange={(e) => setClipChiclet(e.target.checked)} />
+      </label>
+      <label className="native-export-toggle-row">
+        <span>
+          <strong>Export layers separately</strong>
+          <small>Creates foreground and background PNGs; foreground stays transparent.</small>
+        </span>
+        <input type="checkbox" role="switch" checked={layered} onChange={(e) => setLayered(e.target.checked)} />
+      </label>
+      <div className="native-export-footer">
+        <button type="button" className="native-export-button" onClick={() => void send()}>Cancel</button>
+        <button
+          type="button"
+          className="native-export-button native-export-button-primary"
+          disabled={!variants.length}
+          onClick={() => void send({ variants, clipChiclet, layered })}
+        >
+          Export
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function PopupWindow() {
   const popupKind = React.useMemo<PopoverKind | null>(() => {
     const raw = new URLSearchParams(window.location.search).get("popup-kind");
-    return raw === "tooltip" || raw === "dropdown" || raw === "wallpaper" || raw === "color" || raw === "contextMenu" ? raw : null;
+    return raw === "tooltip" || raw === "dropdown" || raw === "wallpaper" || raw === "color" || raw === "contextMenu" || raw === "export" ? raw : null;
   }, []);
   const [payload, setPayload] = React.useState<PopupPayload | null>(() => {
     const raw = new URLSearchParams(window.location.search).get("data");
@@ -906,7 +1017,7 @@ export function PopupWindow() {
     };
   }, [payload?.kind, popupKind]);
 
-  const send = async (value?: string | number) => {
+  const send = async (value?: PopupValue) => {
     if (!payload) return;
     await emitTo("main", "native-popover-result", { sourceId: payload.sourceId, value });
     await getCurrentWindow().hide();
@@ -921,6 +1032,9 @@ export function PopupWindow() {
   }
   if (payload.kind === "contextMenu") {
     return <NativeContextMenu items={payload.items} send={send} />;
+  }
+  if (payload.kind === "export") {
+    return <NativeExportDialog options={payload.options} initial={payload.initial} send={send} />;
   }
   if (payload.kind === "wallpaper") {
     return (
