@@ -3,6 +3,7 @@ name = "refract"
 version = "0.1.4"
 description = "Refract"
 authors = ["6xingyv"]
+license = "MPL-2.0"
 edition = "2021"
 
 [lib]

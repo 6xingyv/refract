@@ -40,3 +40,10 @@ WebGPU-capable webview — WebView2/Chromium on Windows works out of the box).
 ```bash
 bun tauri build
 ```
+
+## 📄 License
+
+Refract is licensed under the [Mozilla Public License 2.0](./LICENSE).
+Commercial use is welcome. If Refract benefits your work or business,
+please consider sponsoring its development or contributing generally useful
+improvements upstream.
