@@ -102,6 +102,13 @@ export class Compositor {
     return `${this.assets.revision}:${layer.imageName ?? "__placeholder"}:${size}`;
   }
 
+  private layerRenderKey(doc: IconDocument, layer: Layer, size: number, clearBg: boolean) {
+    const base = this.shapeKey(layer, size);
+    return clearBg || layer.fill.kind === "none"
+      ? base
+      : `${base}:fill:${doc.previewRendition}:${JSON.stringify(layer.fill)}`;
+  }
+
   private chicletKey(doc: IconDocument, size: number, backdrop: BackdropSpec) {
     const bg = backdrop.kind === "image" ? `image:${backdrop.image}` : `color:${backdrop.color}`;
     return `${doc.previewPlatform}:${size}:${bg}`;
@@ -281,10 +288,10 @@ export class Compositor {
     return `combined:${this.assets.revision}:${doc.previewPlatform}:${doc.previewRendition}:${size}:${clearBg}:${group.id}:${group.position.x},${group.position.y},${group.scale}:${JSON.stringify(partKey)}`;
   }
 
-  /** Cheap per-layer preview thumbnail (asset image, or fill-tinted placeholder); no glass/bg/chiclet. */
+  /** Cheap per-layer preview thumbnail; applies fill when present, with no glass/bg/chiclet. */
   renderLayerThumb(layer: Layer, size: number): HTMLCanvasElement {
     const shape = this.rasterizeShape(layer, size);
-    const data = layer.imageName ? shape : tintShape(shape, layer.fill.primaryColor);
+    const data = layer.imageName && layer.fill.kind === "none" ? shape : fillShape(shape, layer.fill, false);
     const c = tmpCanvas(size);
     c.getContext("2d")!.putImageData(data, 0, 0);
     return c;
@@ -350,15 +357,15 @@ export class Compositor {
         const clearBg = item.kind === "combined" ? item.clearBg : ap.monoFamily && !item.layer.isGlass;
         const { docU, g2, layerU } = this.glassUniformInputs(doc, item.group, item.layer, ap, clearBg);
         const sampled = item.kind === "combined" ? null : this.sampledShapeColor(item.layer, size, item.shape);
-        const usesAssetColor = item.kind === "combined" ? true : layerU.imageName != null;
+        const usesColorTexture = item.kind === "combined" ? true : glassUsesColorTexture(layerU, clearBg);
         const bounds = item.kind === "combined" ? item.bounds : this.shapeBounds(item.layer, size, item.shape);
-        const u = buildUniforms(size, docU, g2, layerU, sampled, usesAssetColor, bounds);
+        const u = buildUniforms(size, docU, g2, layerU, sampled, usesColorTexture, bounds);
         if (materialAlphaMask) u[44] = 1;
         prepares.push({
           shape: new Uint8Array(item.shape.data.buffer),
           size,
           uniforms: u,
-          shapeKey: item.kind === "combined" ? item.shapeKey : this.shapeKey(item.layer, size),
+          shapeKey: item.kind === "combined" ? item.shapeKey : this.layerRenderKey(docU, layerU, size, clearBg),
         });
       }
       if (prepares.length) this.renderer.prepareShapes(prepares);
@@ -480,15 +487,26 @@ export class Compositor {
       // translucency. The appearance code maps everything to greyscale (Mono) / greyscale x tint (Tinted).
       const clearBg = ap.monoFamily && !layer.isGlass;
       const { docU, g2, layerU } = this.glassUniformInputs(doc, group, layer, ap, clearBg);
-      const u = buildUniforms(size, docU, g2, layerU, sampled, layerU.imageName != null, this.shapeBounds(layer, size, shapeData));
+      const colorShape = clearBg ? transparentShapeColor(shapeData) : glassColorShape(shapeData, layerU, RENDITIONS[doc.previewRendition].dark);
+      const usesColorTexture = glassUsesColorTexture(layerU, clearBg);
+      const u = buildUniforms(size, docU, g2, layerU, sampled, usesColorTexture, this.shapeBounds(layer, size, shapeData));
       if (materialAlphaMask) u[44] = 1;
       const shapeBytes = new Uint8Array(shapeData.data.buffer);
-      const out = await this.renderer!.render(shapeBytes, shapeBytes, new Uint8Array(bg.data.buffer), size, u, this.shapeKey(layer, size));
+      const out = await this.renderer!.render(
+        shapeBytes,
+        new Uint8Array(colorShape.data.buffer),
+        new Uint8Array(bg.data.buffer),
+        size,
+        u,
+        this.layerRenderKey(docU, layerU, size, clearBg),
+      );
       layerCanvas = imageToCanvas(new ImageData(out, size, size));
     } else if (ap.monoFamily) {
-      // no-WebGPU fallback: mono = white; tinted = the tint colour (whole icon)
-      const col: IcColor = ap.tinted ? doc.tintColor : { r: 1, g: 1, b: 1, a: 1 };
-      layerCanvas = imageToCanvas(tintShape(shapeData, col));
+      // no-WebGPU / no-backdrop fallback: apply the layer fill first, then the appearance filter.
+      const colorShape = layer.fill.kind === "none" && layer.imageName
+        ? shapeData
+        : fillShape(shapeData, layer.fill, RENDITIONS[doc.previewRendition].dark);
+      layerCanvas = imageToCanvas(filterAppearance(colorShape, doc, ap));
     } else {
       // non-glass: tint by fill colour
       layerCanvas = layer.fill.kind === "none" && layer.imageName
@@ -551,8 +569,12 @@ function transparentShapeColor(shape: ImageData): ImageData {
   return new ImageData(shape.width, shape.height);
 }
 
+function glassUsesColorTexture(layer: Layer, clearBg: boolean): boolean {
+  return !clearBg && (layer.imageName != null || layer.fill.kind !== "none");
+}
+
 function glassColorShape(shape: ImageData, layer: Layer, dark: boolean): ImageData {
-  if (layer.imageName) return shape;
+  if (layer.imageName && layer.fill.kind === "none") return shape;
   const out = fillShape(shape, layer.fill, dark);
   if (layer.fill.kind === "none") return out;
   for (let i = 3; i < out.data.length; i += 4) out.data[i] = Math.round(out.data[i] * 0.65);
@@ -607,11 +629,28 @@ function applyMonoBlend(ctx: CanvasRenderingContext2D, size: number, backdrop: B
   ctx.putImageData(icon, 0, 0);
 }
 
-function tintShape(shape: ImageData, color: IcColor): ImageData {
+function filterAppearance(shape: ImageData, doc: IconDocument, ap: AppearanceMode): ImageData {
   const out = new ImageData(shape.width, shape.height);
-  const r = (color.r * 255) | 0, g = (color.g * 255) | 0, b = (color.b * 255) | 0;
+  const tintStrength = ap.tinted ? Math.max(0, Math.min(1, doc.tintStrength)) : 0;
   for (let i = 0; i < shape.data.length; i += 4) {
-    out.data[i] = r; out.data[i + 1] = g; out.data[i + 2] = b; out.data[i + 3] = shape.data[i + 3];
+    const r = shape.data[i];
+    const g = shape.data[i + 1];
+    const b = shape.data[i + 2];
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (!ap.tinted) {
+      out.data[i] = Math.round(luma);
+      out.data[i + 1] = Math.round(luma);
+      out.data[i + 2] = Math.round(luma);
+      out.data[i + 3] = shape.data[i + 3];
+      continue;
+    }
+    const tr = Math.min(255, luma * doc.tintColor.r * 2);
+    const tg = Math.min(255, luma * doc.tintColor.g * 2);
+    const tb = Math.min(255, luma * doc.tintColor.b * 2);
+    out.data[i] = Math.round(r + (tr - r) * tintStrength);
+    out.data[i + 1] = Math.round(g + (tg - g) * tintStrength);
+    out.data[i + 2] = Math.round(b + (tb - b) * tintStrength);
+    out.data[i + 3] = shape.data[i + 3];
   }
   return out;
 }
