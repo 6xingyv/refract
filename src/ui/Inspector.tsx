@@ -4,6 +4,7 @@ import {
   Group, Layer, GroupSpec, LayerSpec, Lighting, ShadowKind, FillKind, Fill, BlendMode, IconDocument, Platform,
   Appearance, APPEARANCES, slotOf, blendDisplay, resolveGroup, resolveLayer, resolveCompositionFill, PLATFORMS, allLayers,
 } from "../model/types";
+import { appleGradientAngleToInternal, internalGradientAngleToApple } from "../model/angles";
 import { Section, Row, Toggle, Pct, ValueChip, Select, Variation, ColorWell } from "./widgets";
 import type { ChromePlatform } from "./WindowChrome";
 
@@ -122,7 +123,7 @@ function FillEditor({ fill, onChange }: { fill: Fill; onChange: (fill: Fill) => 
       {fill.kind === "linearGradient" && (<>
         <Row label="Primary"><ColorWell color={fill.primaryColor} onChange={(c) => onChange({ ...fill, primaryColor: c })} /></Row>
         <Row label="Secondary"><ColorWell color={fill.secondaryColor} onChange={(c) => onChange({ ...fill, secondaryColor: c })} /></Row>
-        <Row label="Angle"><ValueChip value={Math.round(fill.orientationDeg)} unit="deg" onChange={(n) => onChange({ ...fill, orientationDeg: n })} /></Row>
+        <Row label="Angle"><ValueChip value={Math.round(internalGradientAngleToApple(fill.orientationDeg))} unit="deg" onChange={(n) => onChange({ ...fill, orientationDeg: appleGradientAngleToInternal(n) })} /></Row>
       </>)}
     </>
   );

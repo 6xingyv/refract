@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { useStore } from "../state/store";
 import type { Rendition } from "../model/types";
+import { appleSourceAngleToInternal, internalSourceAngleToApple } from "../model/angles";
 import { PillButton } from "./widgets";
 import { openNativeExportDialog } from "./nativePopover";
 
@@ -57,8 +58,8 @@ export function Toolbar() {
         <span className="w-3 h-3 rounded-full bg-yellow-400/90 inline-block" />
           <input
             className="w-9 bg-transparent text-[12px] text-[color:var(--tx-2)] outline-none tabular-nums"
-            value={`${Math.round(lightAngleDeg)}°`}
-            onChange={(e) => { const n = parseInt(e.target.value); if (!isNaN(n)) setLightAngle(n); }}
+            value={`${Math.round(internalSourceAngleToApple(lightAngleDeg))}°`}
+            onChange={(e) => { const n = parseInt(e.target.value); if (!isNaN(n)) setLightAngle(appleSourceAngleToInternal(n)); }}
           />
       </div>
 

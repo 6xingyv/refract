@@ -3,6 +3,7 @@ import { Grid3x3, ChevronUp, ChevronDown, FolderOpen, Save, Download } from "luc
 import { useStore } from "../state/store";
 import type { Rendition, Platform, Appearance } from "../model/types";
 import { PLATFORMS, renditionOf } from "../model/types";
+import { appleSourceAngleToInternal, internalSourceAngleToApple, normalizeInternalAngle } from "../model/angles";
 import { BG_PRESETS, presetCss } from "../render/backdrop";
 import gridSquare from "../assets/grid-square.png";
 import gridCircle from "../assets/grid-circle.png";
@@ -185,16 +186,17 @@ const GridIcon = () => <Grid3x3 size={14} strokeWidth={1.6} />;
 function LightAngleControl({ value, onChange }: { value: number; onChange: (angle: number) => void }) {
   const dialRef = useRef<HTMLButtonElement>(null);
   const draggingRef = useRef(false);
-  const angle = normalizeAngle(value);
-  const dotX = 50 + 34 * Math.cos((angle * Math.PI) / 180);
-  const dotY = 50 + 34 * Math.sin((angle * Math.PI) / 180);
+  const sourceAngle = normalizeInternalAngle(value + 180);
+  const appleAngle = internalSourceAngleToApple(value);
+  const dotX = 50 + 34 * Math.cos((sourceAngle * Math.PI) / 180);
+  const dotY = 50 + 34 * Math.sin((sourceAngle * Math.PI) / 180);
 
   const updateFromPoint = (clientX: number, clientY: number) => {
     const rect = dialRef.current?.getBoundingClientRect();
     if (!rect) return;
     const x = clientX - (rect.left + rect.width / 2);
     const y = clientY - (rect.top + rect.height / 2);
-    onChange(normalizeAngle((Math.atan2(y, x) * 180) / Math.PI));
+    onChange(normalizeInternalAngle((Math.atan2(y, x) * 180) / Math.PI + 180));
   };
 
   return (
@@ -226,10 +228,10 @@ function LightAngleControl({ value, onChange }: { value: number; onChange: (angl
       </button>
       <input
         className="w-9 bg-transparent text-[12px] text-[color:var(--tx-2)] outline-none tabular-nums"
-        value={`${Math.round(angle)}°`}
+        value={`${Math.round(appleAngle)}°`}
         onChange={(e) => {
           const n = parseInt(e.target.value);
-          if (!isNaN(n)) onChange(normalizeAngle(n));
+          if (!isNaN(n)) onChange(appleSourceAngleToInternal(n));
         }}
       />
     </div>
@@ -255,5 +257,3 @@ const luminance = (hex: string): number => {
   const n = parseInt(m[1], 16);
   return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
 };
-
-const normalizeAngle = (angle: number): number => ((angle % 360) + 360) % 360;

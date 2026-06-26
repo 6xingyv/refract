@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { IconDocument, Rendition, Platform, Appearance } from "../model/types";
 import { allLayers, slotOf, renditionOf, specSlot } from "../model/types";
+import { normalizeInternalAngle } from "../model/angles";
 
 const VARIANTS: Rendition[] = ["Default", "Dark", "Mono"];
 const PLATFORM_VARIANTS: Platform[] = ["iOS", "macOS", "watchOS"];
@@ -320,8 +321,9 @@ export const useStore = create<State>((set, get) => {
       return true;
     },
     setLightAngle: (angle) => {
-      if (get().lightAngleDeg === angle) return;
-      set({ lightAngleDeg: angle });
+      const next = normalizeInternalAngle(angle);
+      if (get().lightAngleDeg === next) return;
+      set({ lightAngleDeg: next });
       scheduleRender("preview");
     },
     setZoom: (z) => { set({ zoom: Math.max(0.25, Math.min(4, z)) }); scheduleRender("preview"); },
