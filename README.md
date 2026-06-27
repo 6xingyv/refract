@@ -32,8 +32,8 @@ bun install
 bun tauri dev
 ```
 
-`bun run dev` runs the web frontend alone (Open/Save need the Tauri shell; rendering needs a
-WebGPU-capable webview — WebView2/Chromium on Windows works out of the box).
+`bun run dev` runs the web frontend alone (Open/Save need the Tauri shell; rendering uses
+WebGPU when available and automatically falls back to WebGL2).
 
 ## 📦 Build
 

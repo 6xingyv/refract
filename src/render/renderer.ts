@@ -1,6 +1,8 @@
-// The glass pass graph - browser WebGPU port of WgpuRenderEngine.renderOnGpu.
+// The glass pass graph - browser GPU port of WgpuRenderEngine.renderOnGpu.
 // alphaShape -> JFA -> SDF (+ smoothed SDF normals) -> distance_gradient ; background blur ; shadow ; glass/color/highlight ; composite.
-import { Gpu, Format, BindKind, type Tex } from "./gpu";
+import type { BindKind, Format, RenderBackend, RenderEncoder, RenderPipeline, Tex } from "./backend";
+import { Gpu } from "./gpu";
+import { WebGlGpu } from "./webgl";
 import { patch } from "./uniforms";
 
 import common from "./shaders/common.wgsl.inc?raw";
@@ -53,10 +55,25 @@ export class Renderer {
   private shapeCache = new Map<string, ShapeResources>();
   private shadowCache = new Map<string, ShadowResources>();
 
-  constructor(private gpu: Gpu) {}
+  constructor(private gpu: RenderBackend) {}
 
   static async create(): Promise<Renderer> {
-    return new Renderer(await Gpu.create());
+    const errors: string[] = [];
+    try {
+      return new Renderer(await Gpu.create());
+    } catch (e: any) {
+      errors.push(`WebGPU: ${e?.message ?? e}`);
+    }
+    try {
+      return new Renderer(await WebGlGpu.create());
+    } catch (e: any) {
+      errors.push(`WebGL2: ${e?.message ?? e}`);
+    }
+    throw new Error(errors.join("; "));
+  }
+
+  get backendKind() {
+    return this.gpu.kind;
   }
 
   private pl(name: string, target: Format, bindings: BindKind[]) {
@@ -64,11 +81,11 @@ export class Renderer {
   }
 
   private destroyShapeResources(r: ShapeResources) {
-    for (const t of r.owned) t.tex.destroy();
+    for (const t of r.owned) this.gpu.destroyTexture(t);
   }
 
   private destroyShadowResources(r: ShadowResources) {
-    r.shadowTex.tex.destroy();
+    this.gpu.destroyTexture(r.shadowTex);
   }
 
   clearShapeCache() {
@@ -126,7 +143,7 @@ export class Renderer {
     ].join(":");
   }
 
-  private buildShapeResources(shape: Uint8Array<ArrayBuffer>, size: number, u: Float32Array<ArrayBuffer>, key: string | null, enc: GPUCommandEncoder): ShapeResources {
+  private buildShapeResources(shape: Uint8Array<ArrayBuffer>, size: number, u: Float32Array<ArrayBuffer>, key: string | null, enc: RenderEncoder): ShapeResources {
     const g = this.gpu, n = size, samp = g.sampler();
     const persistent = key != null;
     const uni = (step = 0, bx = 0, by = 0) => g.uniform(patch(u, step, bx, by));
@@ -186,7 +203,7 @@ export class Renderer {
     }
   }
 
-  private shapeResources(shape: Uint8Array<ArrayBuffer>, size: number, u: Float32Array<ArrayBuffer>, enc: GPUCommandEncoder, shapeKey?: string): ShapeResources {
+  private shapeResources(shape: Uint8Array<ArrayBuffer>, size: number, u: Float32Array<ArrayBuffer>, enc: RenderEncoder, shapeKey?: string): ShapeResources {
     if (shapeKey) {
       const cached = this.touchShapeResources(shapeKey);
       if (cached) return cached;
@@ -198,7 +215,7 @@ export class Renderer {
     return this.buildShapeResources(shape, size, u, null, enc);
   }
 
-  private shadowResources(shapeRes: ShapeResources, colorTex: Tex, size: number, u: Float32Array<ArrayBuffer>, enc: GPUCommandEncoder, shapeKey?: string): Tex {
+  private shadowResources(shapeRes: ShapeResources, colorTex: Tex, size: number, u: Float32Array<ArrayBuffer>, enc: RenderEncoder, shapeKey?: string): Tex {
     const key = this.shadowKey(shapeKey, u);
     const cached = key ? this.touchShadowResources(key) : null;
     if (cached) return cached.shadowTex;

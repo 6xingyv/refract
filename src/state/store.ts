@@ -66,8 +66,8 @@ async function ensureCompositor(setError: (e: string | null) => void) {
         const renderer = await Renderer.create();
         compositor = new Compositor(renderer, assets);
       } catch (e: any) {
-        // WebGPU unavailable -> non-glass fallback (tinted shapes only)
-        setError(`WebGPU unavailable: ${e?.message ?? e}. Glass effects disabled.`);
+        // GPU unavailable -> non-glass fallback (tinted shapes only)
+        setError(`GPU rendering unavailable: ${e?.message ?? e}. Glass effects disabled.`);
         compositor = new Compositor(null, assets);
       }
     })();

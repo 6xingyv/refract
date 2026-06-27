@@ -1,14 +1,15 @@
 // Minimal WebGPU helper - the browser equivalent of Gpu.kt. Each method maps to one WebGPU op.
-// The pass graph in renderer.ts stays binding-agnostic; the WGSL shaders are reused verbatim.
+// The pass graph in renderer.ts stays backend-agnostic; the WGSL shaders are reused verbatim.
 
-export type Format = "rgba8unorm" | "rgba16float";
-export type BindKind = "U" | "T" | "S";
+import type { BindKind, Format, RenderBackend, RenderEncoder, RenderPipeline, RenderSampler, RenderUniform, Tex } from "./backend";
 
-export interface Tex { tex: GPUTexture; view: GPUTextureView; w: number; h: number; format: Format }
+interface GpuTex extends Tex { tex: GPUTexture; view: GPUTextureView }
+interface GpuPipeline extends RenderPipeline { pipeline: GPURenderPipeline; layout: GPUBindGroupLayout; bindings: BindKind[] }
 
-export class Gpu {
+export class Gpu implements RenderBackend {
+  readonly kind = "webgpu" as const;
   device!: GPUDevice;
-  private pipelines = new Map<string, { pipeline: GPURenderPipeline; layout: GPUBindGroupLayout; bindings: BindKind[] }>();
+  private pipelines = new Map<string, GpuPipeline>();
   private _sampler?: GPUSampler;
   private transient: GPUTexture[] = [];
   private buffers: GPUBuffer[] = [];
@@ -29,7 +30,7 @@ export class Gpu {
     return this._sampler;
   }
 
-  texture(w: number, h: number, format: Format, render: boolean, persistent = false): Tex {
+  texture(w: number, h: number, format: Format, render: boolean, persistent = false): GpuTex {
     let usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
     if (render) usage |= GPUTextureUsage.RENDER_ATTACHMENT;
     const tex = this.device.createTexture({ size: { width: w, height: h }, format, usage });
@@ -38,8 +39,12 @@ export class Gpu {
   }
 
   /** Upload RGBA8 bytes (Uint8Array, length w*h*4). */
+  destroyTexture(t: Tex) {
+    (t as GpuTex).tex.destroy();
+  }
+
   upload(t: Tex, rgba: Uint8Array<ArrayBuffer>, w: number, h: number) {
-    this.device.queue.writeTexture({ texture: t.tex }, rgba, { bytesPerRow: w * 4, rowsPerImage: h }, { width: w, height: h });
+    this.device.queue.writeTexture({ texture: (t as GpuTex).tex }, rgba, { bytesPerRow: w * 4, rowsPerImage: h }, { width: w, height: h });
   }
 
   uniform(floats: Float32Array<ArrayBuffer>): GPUBuffer {
@@ -49,7 +54,7 @@ export class Gpu {
     return buf;
   }
 
-  pipeline(name: string, wgsl: string, target: Format, bindings: BindKind[]) {
+  pipeline(name: string, wgsl: string, target: Format, bindings: BindKind[]): GpuPipeline {
     const cached = this.pipelines.get(name);
     if (cached) return cached;
     const module = this.device.createShaderModule({ code: wgsl, label: name });
@@ -75,23 +80,25 @@ export class Gpu {
     return this.device.createCommandEncoder();
   }
 
-  submit(enc: GPUCommandEncoder) {
-    this.device.queue.submit([enc.finish()]);
+  submit(enc: RenderEncoder) {
+    this.device.queue.submit([(enc as GPUCommandEncoder).finish()]);
   }
 
   /** Run one fullscreen pass into `target`. resources are uniform + textures (+ optional sampler), in declaration order. */
-  pass(p: { pipeline: GPURenderPipeline; layout: GPUBindGroupLayout; bindings: BindKind[] }, target: Tex, uniform: GPUBuffer, textures: Tex[], sampler?: GPUSampler, enc?: GPUCommandEncoder) {
+  pass(p: RenderPipeline, target: Tex, uniform: RenderUniform, textures: Tex[], sampler?: RenderSampler, enc?: RenderEncoder) {
+    const gp = p as GpuPipeline;
+    const gt = target as GpuTex;
     const entries: GPUBindGroupEntry[] = [];
     let ti = 0;
-    p.bindings.forEach((b, i) => {
-      if (b === "U") entries.push({ binding: i, resource: { buffer: uniform } });
-      else if (b === "T") entries.push({ binding: i, resource: textures[ti++].view });
-      else entries.push({ binding: i, resource: sampler ?? this.sampler() });
+    gp.bindings.forEach((b, i) => {
+      if (b === "U") entries.push({ binding: i, resource: { buffer: uniform as GPUBuffer } });
+      else if (b === "T") entries.push({ binding: i, resource: (textures[ti++] as GpuTex).view });
+      else entries.push({ binding: i, resource: (sampler as GPUSampler | undefined) ?? this.sampler() });
     });
-    const bindGroup = this.device.createBindGroup({ layout: p.layout, entries });
-    const ownEncoder = enc ?? this.commandEncoder();
-    const rp = ownEncoder.beginRenderPass({ colorAttachments: [{ view: target.view, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" }] });
-    rp.setPipeline(p.pipeline);
+    const bindGroup = this.device.createBindGroup({ layout: gp.layout, entries });
+    const ownEncoder = (enc as GPUCommandEncoder | undefined) ?? this.commandEncoder();
+    const rp = ownEncoder.beginRenderPass({ colorAttachments: [{ view: gt.view, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" }] });
+    rp.setPipeline(gp.pipeline);
     rp.setBindGroup(0, bindGroup);
     rp.draw(3);
     rp.end();
@@ -99,11 +106,11 @@ export class Gpu {
   }
 
   /** copyTextureToBuffer (rgba8) + map -> RGBA Uint8ClampedArray (length w*h*4). */
-  async readback(t: Tex, w: number, h: number, enc?: GPUCommandEncoder): Promise<Uint8ClampedArray<ArrayBuffer>> {
+  async readback(t: Tex, w: number, h: number, enc?: RenderEncoder): Promise<Uint8ClampedArray<ArrayBuffer>> {
     const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
     const buf = this.device.createBuffer({ size: bytesPerRow * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    const ownEncoder = enc ?? this.commandEncoder();
-    ownEncoder.copyTextureToBuffer({ texture: t.tex }, { buffer: buf, bytesPerRow, rowsPerImage: h }, { width: w, height: h });
+    const ownEncoder = (enc as GPUCommandEncoder | undefined) ?? this.commandEncoder();
+    ownEncoder.copyTextureToBuffer({ texture: (t as GpuTex).tex }, { buffer: buf, bytesPerRow, rowsPerImage: h }, { width: w, height: h });
     this.submit(ownEncoder);
     await buf.mapAsync(GPUMapMode.READ);
     const src = new Uint8Array(buf.getMappedRange());
