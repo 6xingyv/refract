@@ -25,6 +25,8 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    environment:
+      name: release
     strategy:
       fail-fast: false
       matrix:
@@ -34,21 +36,23 @@ jobs:
             rust-targets: ""
             args: --bundles msi
             artifact-name: release-windows-msi
-            artifact-path: src-tauri/target/release/bundle/msi/*.msi
+            artifact-path: src-tauri/target/release/bundle/msi/*
 
           - name: macOS Universal DMG
             os: macos-latest
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
             args: --target universal-apple-darwin --bundles dmg
             artifact-name: release-macos-dmg
-            artifact-path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            artifact-path: |
+              src-tauri/target/universal-apple-darwin/release/bundle/dmg/*
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*
 
           - name: Linux AppImage
             os: ubuntu-22.04
             rust-targets: ""
             args: --bundles appimage
             artifact-name: release-linux-appimage
-            artifact-path: src-tauri/target/release/bundle/appimage/*.AppImage
+            artifact-path: src-tauri/target/release/bundle/appimage/*
 
     steps:
       - name: Check out repository
@@ -86,6 +90,10 @@ jobs:
 
       - name: Build application
         uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: bun tauri
           args: ${{ matrix.args }}
@@ -103,6 +111,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
       - name: Download packages
         uses: actions/download-artifact@v4
         with:
@@ -110,16 +124,119 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Generate release notes from commits
+        run: |
+          set -euo pipefail
+
+          current_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+          previous_tag="$(git describe --tags --abbrev=0 "${current_commit}^" 2>/dev/null || true)"
+          short_sha="$(git rev-parse --short "$current_commit")"
+
+          if [ -n "$previous_tag" ]; then
+            git log --no-merges --pretty=format:'- %s (%h)' "$previous_tag..$RELEASE_TAG" \
+              | grep -vE '^- (update|chore): Bump version' > release-changes.md || true
+          else
+            git log --no-merges --pretty=format:'- %s (%h)' "$RELEASE_TAG" > release-changes.md || true
+          fi
+          if [ ! -s release-changes.md ]; then
+            echo "- No code changes recorded since the previous release." > release-changes.md
+          fi
+
+          {
+            if [ -n "$previous_tag" ]; then
+              echo "Changes since $previous_tag."
+            else
+              echo "Initial release."
+            fi
+            echo
+            echo "## Changes"
+            cat release-changes.md
+            echo
+            echo "## Build"
+            echo "- Tag: \`$RELEASE_TAG\`"
+            echo "- Commit: \`$short_sha\`"
+          } > release-notes.md
+
+      - name: Generate updater manifest
+        env:
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const assetsDir = "release-assets";
+          const releaseTag = process.env.RELEASE_TAG;
+          const version = releaseTag.replace(/^v/, "");
+          const repo = process.env.GH_REPO;
+          const files = fs.readdirSync(assetsDir).filter((name) => {
+            return fs.statSync(path.join(assetsDir, name)).isFile();
+          });
+
+          const releaseAssetUrl = (name) => {
+            return `https://github.com/${repo}/releases/download/${encodeURIComponent(releaseTag)}/${encodeURIComponent(name)}`;
+          };
+          const find = (...patterns) => files.find((name) => patterns.some((pattern) => pattern.test(name)));
+          const signatureFor = (asset) => {
+            const sigFile = `${asset}.sig`;
+            if (!files.includes(sigFile)) throw new Error(`Missing updater signature: ${sigFile}`);
+            return fs.readFileSync(path.join(assetsDir, sigFile), "utf8").trim();
+          };
+          const platformEntry = (asset) => ({
+            signature: signatureFor(asset),
+            url: releaseAssetUrl(asset),
+          });
+
+          const platforms = {};
+
+          const windowsMsi = find(/\.msi\.zip$/i);
+          if (windowsMsi) platforms["windows-x86_64-msi"] = platformEntry(windowsMsi);
+
+          const windowsNsis = find(/-setup\.exe\.zip$/i, /\.exe\.zip$/i);
+          if (windowsNsis) platforms["windows-x86_64-nsis"] = platformEntry(windowsNsis);
+
+          const macUniversal = find(/universal.*\.app\.tar\.gz$/i);
+          const macArm64 = find(/aarch64.*\.app\.tar\.gz$/i) ?? macUniversal ?? find(/\.app\.tar\.gz$/i);
+          const macX64 = find(/(?:x64|x86_64).*\.app\.tar\.gz$/i) ?? macUniversal ?? macArm64;
+          if (macArm64) platforms["darwin-aarch64"] = platformEntry(macArm64);
+          if (macX64) platforms["darwin-x86_64"] = platformEntry(macX64);
+
+          const linuxAppImage = find(/\.AppImage\.tar\.gz$/i);
+          if (linuxAppImage) platforms["linux-x86_64-appimage"] = platformEntry(linuxAppImage);
+
+          const missing = [];
+          if (!windowsMsi && !windowsNsis) missing.push("Windows updater archive (*.msi.zip or *-setup.exe.zip)");
+          if (!macArm64 && !macX64) missing.push("macOS updater archive (*.app.tar.gz)");
+          if (!linuxAppImage) missing.push("Linux updater archive (*.AppImage.tar.gz)");
+          if (missing.length) {
+            throw new Error(`Missing updater artifacts:\n- ${missing.join("\n- ")}`);
+          }
+
+          const manifest = {
+            version,
+            notes: fs.existsSync("release-notes.md") ? fs.readFileSync("release-notes.md", "utf8").trim() : "",
+            pub_date: new Date().toISOString(),
+            platforms,
+          };
+          fs.writeFileSync(path.join(assetsDir, "latest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+          console.log(`Generated latest.json for ${Object.keys(platforms).join(", ")}`);
+          NODE
+
       - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --title "Refract $RELEASE_TAG" \
+              --notes-file release-notes.md
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
           else
             gh release create "$RELEASE_TAG" release-assets/* \
               --verify-tag \
               --title "Refract $RELEASE_TAG" \
-              --generate-notes
+              --notes-file release-notes.md
           fi
