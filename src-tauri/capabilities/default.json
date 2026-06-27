@@ -2,7 +2,10 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability for the main window",
-  "windows": ["main", "refract-popover-*"],
+  "windows": [
+    "main",
+    "refract-popover-*"
+  ],
   "permissions": [
     "core:default",
     "dialog:default",
@@ -26,6 +29,7 @@
     "core:window:allow-set-skip-taskbar",
     "core:window:allow-show",
     "core:webview:allow-create-webview-window",
-    "core:window:allow-toggle-maximize"
+    "core:window:allow-toggle-maximize",
+    "process:default"
   ]
 }

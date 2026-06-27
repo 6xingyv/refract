@@ -290,9 +290,19 @@ fn window_system_integration_plugin<R: tauri::Runtime>() -> tauri::plugin::Tauri
         .build()
 }
 
+fn updater_builder() -> tauri_plugin_updater::Builder {
+    let mut builder = tauri_plugin_updater::Builder::new();
+    if let Some(pubkey) = option_env!("TAURI_UPDATER_PUBKEY").filter(|key| !key.trim().is_empty()) {
+        builder = builder.pubkey(pubkey);
+    }
+    builder
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(updater_builder().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(window_system_integration_plugin())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())

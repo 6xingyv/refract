@@ -7,6 +7,8 @@ dist-ssr
 # Tauri / Rust
 src-tauri/target
 src-tauri/gen
+updater.key
+src-tauri/updater.key
 
 # logs / editor
 *.log

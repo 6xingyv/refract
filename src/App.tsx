@@ -8,6 +8,7 @@ import { NativeTooltipProvider, openNativeContextMenu, type NativeContextMenuIte
 import { ICON_ID, useStore } from "./state/store";
 import { addGroup, addLayer } from "./model/document";
 import { backdropCss, isDarkBackdrop } from "./render/backdrop";
+import { checkForAppUpdates } from "./updater";
 
 type ImportAsset = { name: string; dataUrl: string };
 type ContextMenuAction = NativeContextMenuItem & {
@@ -89,6 +90,11 @@ export function App() {
   const resetDrag = useCallback(() => {
     depth.current = 0;
     setDragging(false);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void checkForAppUpdates(), 2000);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {

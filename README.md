@@ -35,6 +35,8 @@ bun tauri dev
 `bun run dev` runs the web frontend alone (Open/Save need the Tauri shell; rendering uses
 WebGPU when available and automatically falls back to WebGL2).
 
+Auto-update release setup is documented in [docs/UPDATER.md](./docs/UPDATER.md).
+
 ## 📦 Build
 
 ```bash
