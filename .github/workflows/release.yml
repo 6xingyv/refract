@@ -88,6 +88,44 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      - name: Prepare updater config
+        shell: bash
+        env:
+          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          const fs = require("fs");
+
+          const pubkey = process.env.TAURI_UPDATER_PUBKEY?.trim();
+          if (!pubkey) {
+            throw new Error("Missing TAURI_UPDATER_PUBKEY secret");
+          }
+
+          fs.writeFileSync(
+            ".tauri-updater-config.json",
+            `${JSON.stringify({ plugins: { updater: { pubkey } } }, null, 2)}\n`,
+          );
+          NODE
+
+      - name: Validate updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "Missing TAURI_SIGNING_PRIVATE_KEY secret" >&2
+            exit 1
+          fi
+
+          printf 'refract updater signing preflight' > updater-signing-preflight.txt
+          bun tauri signer sign --password="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" updater-signing-preflight.txt >/dev/null
+          rm updater-signing-preflight.txt updater-signing-preflight.txt.sig
+
       - name: Build application
         uses: tauri-apps/tauri-action@v0.6.2
         env:
@@ -96,7 +134,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: bun tauri
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} --config .tauri-updater-config.json
 
       - name: Upload package
         uses: actions/upload-artifact@v4

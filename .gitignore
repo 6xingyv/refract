@@ -9,6 +9,7 @@ src-tauri/target
 src-tauri/gen
 updater.key
 src-tauri/updater.key
+.tauri-updater-config.json
 
 # logs / editor
 *.log
