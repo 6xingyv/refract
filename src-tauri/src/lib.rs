@@ -184,7 +184,7 @@ fn native_popover_metrics<R: tauri::Runtime>(window: tauri::Window<R>) -> Native
 
 #[cfg(target_os = "macos")]
 fn apply_native_popover_appearance<R: tauri::Runtime>(
-    window: &tauri::Window<R>,
+    window: &tauri::WebviewWindow<R>,
     dark: bool,
 ) -> Result<(), String> {
     if !window.label().starts_with(POPOVER_LABEL_PREFIX) {
@@ -196,10 +196,12 @@ fn apply_native_popover_appearance<R: tauri::Runtime>(
         return Ok(());
     }
 
-    let appearance_name = if dark {
-        NSAppearanceNameDarkAqua
-    } else {
-        NSAppearanceNameAqua
+    let appearance_name = unsafe {
+        if dark {
+            NSAppearanceNameDarkAqua
+        } else {
+            NSAppearanceNameAqua
+        }
     };
     let appearance = NSAppearance::appearanceNamed(appearance_name)
         .ok_or_else(|| "Failed to resolve macOS appearance".to_string())?;
@@ -224,7 +226,7 @@ fn set_native_popover_appearance<R: tauri::Runtime>(
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let Some(window) = app.get_window(&label) else {
+        let Some(window) = app.get_webview_window(&label) else {
             return Ok(());
         };
         let window_for_apply = window.clone();
