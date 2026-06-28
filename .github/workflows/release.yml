@@ -41,18 +41,23 @@ jobs:
           - name: macOS Universal DMG
             os: macos-latest
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            args: --target universal-apple-darwin --bundles dmg
+            args: --target universal-apple-darwin --bundles app,dmg
             artifact-name: release-macos-dmg
             artifact-path: |
-              src-tauri/target/universal-apple-darwin/release/bundle/dmg/*
-              src-tauri/target/universal-apple-darwin/release/bundle/macos/*
+              src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
 
           - name: Linux AppImage
             os: ubuntu-22.04
             rust-targets: ""
             args: --bundles appimage
             artifact-name: release-linux-appimage
-            artifact-path: src-tauri/target/release/bundle/appimage/*
+            artifact-path: |
+              src-tauri/target/release/bundle/appimage/*.AppImage
+              src-tauri/target/release/bundle/appimage/*.AppImage.sig
+              src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz
+              src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz.sig
 
     steps:
       - name: Check out repository
@@ -162,6 +167,31 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Prepare release assets
+        run: |
+          set -euo pipefail
+
+          rm -rf release-upload
+          mkdir -p release-upload
+
+          find release-assets -type f \( \
+            -name '*.msi' -o \
+            -name '*.msi.sig' -o \
+            -name '*.msi.zip' -o \
+            -name '*.msi.zip.sig' -o \
+            -name '*.dmg' -o \
+            -name '*.AppImage' -o \
+            -name '*.AppImage.sig' -o \
+            -name '*.AppImage.tar.gz' -o \
+            -name '*.AppImage.tar.gz.sig' -o \
+            -name '*.app.tar.gz' -o \
+            -name '*.app.tar.gz.sig' \
+          \) -print0 | while IFS= read -r -d '' file; do
+            cp "$file" "release-upload/$(basename "$file")"
+          done
+
+          find release-upload -maxdepth 1 -type f -printf '%f\n' | sort
+
       - name: Generate release notes from commits
         run: |
           set -euo pipefail
@@ -205,7 +235,7 @@ jobs:
           const fs = require("fs");
           const path = require("path");
 
-          const assetsDir = "release-assets";
+          const assetsDir = "release-upload";
           const releaseTag = process.env.RELEASE_TAG;
           const version = releaseTag.replace(/^v/, "");
           const repo = process.env.GH_REPO;
@@ -271,9 +301,9 @@ jobs:
             gh release edit "$RELEASE_TAG" \
               --title "Refract $RELEASE_TAG" \
               --notes-file release-notes.md
-            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+            gh release upload "$RELEASE_TAG" release-upload/* --clobber
           else
-            gh release create "$RELEASE_TAG" release-assets/* \
+            gh release create "$RELEASE_TAG" release-upload/* \
               --verify-tag \
               --title "Refract $RELEASE_TAG" \
               --notes-file release-notes.md
