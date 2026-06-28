@@ -18,9 +18,13 @@ use objc2::msg_send;
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSColor, NSPopUpMenuWindowLevel, NSWindow, NSWindowAnimationBehavior, NSWindowButton,
     NSWindowCollectionBehavior, NSWindowStyleMask, NSWindowTitleVisibility,
 };
+
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 
 #[cfg(target_os = "macos")]
 use window_vibrancy::{
@@ -178,6 +182,68 @@ fn native_popover_metrics<R: tauri::Runtime>(window: tauri::Window<R>) -> Native
     }
 }
 
+#[cfg(target_os = "macos")]
+fn apply_native_popover_appearance<R: tauri::Runtime>(
+    window: &tauri::Window<R>,
+    dark: bool,
+) -> Result<(), String> {
+    if !window.label().starts_with(POPOVER_LABEL_PREFIX) {
+        return Ok(());
+    }
+
+    let ns_window = window.ns_window().map_err(|error| error.to_string())?;
+    if ns_window.is_null() {
+        return Ok(());
+    }
+
+    let appearance_name = if dark {
+        NSAppearanceNameDarkAqua
+    } else {
+        NSAppearanceNameAqua
+    };
+    let appearance = NSAppearance::appearanceNamed(appearance_name)
+        .ok_or_else(|| "Failed to resolve macOS appearance".to_string())?;
+    let ns_window = unsafe { &*(ns_window.cast::<NSWindow>()) };
+
+    ns_window.setAppearance(Some(&appearance));
+    if let Some(content_view) = ns_window.contentView() {
+        content_view.setAppearance(Some(&appearance));
+        if let Some(blur_view) = content_view.viewWithTag(NS_VIEW_TAG_BLUR_VIEW) {
+            blur_view.setAppearance(Some(&appearance));
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn set_native_popover_appearance<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    label: String,
+    dark: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(window) = app.get_window(&label) else {
+            return Ok(());
+        };
+        let window_for_apply = window.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        window
+            .run_on_main_thread(move || {
+                let _ = tx.send(apply_native_popover_appearance(&window_for_apply, dark));
+            })
+            .map_err(|error| error.to_string())?;
+        return rx.recv().map_err(|error| error.to_string())?;
+    };
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, label, dark);
+        Ok(())
+    }
+}
+
 #[cfg(windows)]
 fn configure_popover_window_flags<R: tauri::Runtime>(window: &tauri::Window<R>) {
     if !window.label().starts_with(POPOVER_LABEL_PREFIX) {
@@ -311,7 +377,8 @@ pub fn run() {
             save_icon,
             export_pngs,
             read_image_assets,
-            native_popover_metrics
+            native_popover_metrics,
+            set_native_popover_appearance
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

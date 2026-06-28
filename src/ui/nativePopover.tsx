@@ -64,7 +64,9 @@ const closedSources = new Set<string>();
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
-const appIsDarkMode = () => window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false;
+const appIsDarkMode = () =>
+  !!document.querySelector(".ui-dark") ||
+  (window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ?? false);
 const isMacPlatform = () => navigator.platform.toLowerCase().includes("mac") || navigator.userAgent.toLowerCase().includes("mac os");
 const isMenuKind = (kind: PopoverKind) => kind === "dropdown" || kind === "contextMenu";
 
@@ -408,6 +410,7 @@ async function openNativePopover(anchor: HTMLElement, payload: PopupPayload, pla
     return null;
   }
 
+  await applyNativePopoverAppearance(slot.label, payload.dark);
   await emitTo(slot.label, payloadEvent(slot.kind), payload);
   if (closedSources.has(payload.sourceId)) {
     await closeNativePopover(payload.sourceId);
@@ -442,6 +445,7 @@ async function openNativePopoverAtPoint(clientX: number, clientY: number, payloa
     return null;
   }
 
+  await applyNativePopoverAppearance(slot.label, payload.dark);
   await emitTo(slot.label, payloadEvent(slot.kind), payload);
   if (closedSources.has(payload.sourceId)) {
     await closeNativePopover(payload.sourceId);
@@ -450,6 +454,15 @@ async function openNativePopoverAtPoint(clientX: number, clientY: number, payloa
 
   await showPopoverSlot(slot);
   return slot.win;
+}
+
+async function applyNativePopoverAppearance(label: string, dark: boolean) {
+  if (!isMacPlatform()) return;
+  try {
+    await invoke("set_native_popover_appearance", { label, dark });
+  } catch {
+    // Older/non-macOS builds do not expose the native appearance hook.
+  }
 }
 
 export async function openNativeDropdown(anchor: HTMLElement, value: string, options: string[], variant: "chip" | "plain") {
@@ -988,6 +1001,7 @@ export function PopupWindow() {
 
   React.useEffect(() => {
     document.body.classList.toggle("native-popover-dark", !!payload?.dark);
+    void applyNativePopoverAppearance(getCurrentWindow().label, !!payload?.dark);
   }, [payload?.dark]);
 
   React.useEffect(() => {
