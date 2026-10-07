@@ -16,16 +16,19 @@ const cargoLockPath = resolve(root, "src-tauri", "Cargo.lock");
 
 const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
 packageJson.version = version;
-writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
-
 const cargoToml = readFileSync(cargoTomlPath, "utf8");
-writeFileSync(cargoTomlPath, cargoToml.replace(/^version = ".*"$/m, `version = "${version}"`));
-
 const cargoLock = readFileSync(cargoLockPath, "utf8");
-const updatedLock = cargoLock.replace(
-  /(\[\[package\]\r?\nname = "refract"\r?\nversion = )".*"/,
-  `$1"${version}"`,
-);
+const cargoVersionPattern = /^version = ".*"$/m;
+const lockVersionPattern = /(\[\[package\]\]\r?\nname = "refract"\r?\nversion = )".*"/;
+// Validate both projections before writing any version file. A missed lockfile
+// match otherwise leaves a partially bumped release that fails cargo --locked.
+if (!cargoVersionPattern.test(cargoToml) || !lockVersionPattern.test(cargoLock)) {
+  throw new Error("Unable to find the Refract version in Cargo.toml or Cargo.lock");
+}
+const updatedToml = cargoToml.replace(cargoVersionPattern, `version = "${version}"`);
+const updatedLock = cargoLock.replace(lockVersionPattern, `$1"${version}"`);
+writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
+writeFileSync(cargoTomlPath, updatedToml);
 writeFileSync(cargoLockPath, updatedLock);
 
 console.log(`Refract version set to ${version}`);
