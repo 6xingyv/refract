@@ -44,6 +44,22 @@ export const RENDITIONS: Record<Rendition, RenditionInfo> = {
   ClearLight: { dark: false, appearanceCode: 5 },
 };
 
+export const PREVIEW_RENDITIONS: Rendition[] = [
+  "Default", "Dark", "ClearLight", "ClearDark", "TintedLight", "TintedDark",
+];
+
+export type ArtworkRendition = "Default" | "Dark" | "Mono";
+export const ARTWORK_RENDITIONS: ArtworkRendition[] = ["Default", "Dark", "Mono"];
+export type MonoPreviewRendition = "ClearLight" | "ClearDark" | "TintedLight" | "TintedDark";
+export const isMonoPreview = (r: Rendition): r is MonoPreviewRendition =>
+  r === "ClearLight" || r === "ClearDark" || r === "TintedLight" || r === "TintedDark";
+
+/** Material preview is independent of the inspector's editable artwork slot. */
+export const appearanceOf = (r: Rendition): Appearance => {
+  const slot = specSlot(r);
+  return slot === "Dark" ? "Dark" : slot === "Mono" ? "Mono" : "Default";
+};
+
 /** Appearance edit slots shown in the inspector: All (base) / Default / Dark / Mono. */
 export type Appearance = "All" | "Default" | "Dark" | "Mono";
 export const APPEARANCES: Appearance[] = ["All", "Default", "Dark", "Mono"];
@@ -56,7 +72,7 @@ export const renditionOf = (a: Appearance): Rendition => (a === "Dark" ? "Dark" 
 export function specSlot(r: Rendition): string | null {
   switch (r) {
     case "Dark": return "Dark";
-    case "Mono": case "TintedLight": case "TintedDark": return "Mono";
+    case "Mono": case "TintedLight": case "TintedDark": case "ClearLight": case "ClearDark": return "Mono";
     case "Default": case "Light": return "Default";
     default: return null;
   }
@@ -70,21 +86,33 @@ export const defaultFill = (): Fill => ({
   primaryColor: rgba(0.36, 0.66, 1), secondaryColor: rgba(0.18, 0.42, 0.95), orientationDeg: 90,
 });
 
-export interface BlurMaterial { enabled: boolean; strength: number }
+export interface BlurMaterial {
+  enabled: boolean;
+  /** Authored scalar: 1 = 100%; the renderer caps its effective strength at 2. */
+  strength: number;
+}
 export const defaultBlur = (): BlurMaterial => ({ enabled: false, strength: 0.5 });
 
 export interface Specular {
-  enabled: boolean; height: number; spread: number; biasAmount: number; curvature: number; color: IcColor;
+  enabled: boolean;
+  /** null selects native-derived defaults; a number overrides design points in the preview. */
+  height: number | null;
+  spread: number; biasAmount: number; curvature: number | null; color: IcColor;
 }
 export const defaultSpecular = (): Specular => ({
-  enabled: true, height: 3, spread: 0.35, biasAmount: 0.4, curvature: 0.6, color: rgba(0.95, 0.97, 1, 0.9),
+  // Native glyph spread is 108 degrees; cosine is our preview angle-to-dot adapter.
+  enabled: true, height: null, spread: Math.cos(108 * Math.PI / 180), biasAmount: 0.5,
+  curvature: null, color: rgba(1, 1, 1, 1),
 });
 
 export interface Shadow {
-  kind: ShadowKind; opacity: number; enabled: boolean; radius: number; color: IcColor;
+  kind: ShadowKind; opacity: number; enabled: boolean;
+  /** Preview Gaussian sigma in the 1024-point design space; not an authored CAR field. */
+  radius: number;
+  color: IcColor;
 }
 export const defaultShadow = (): Shadow => ({
-  kind: "neutral", opacity: 0.35, enabled: true, radius: 24, color: rgba(0, 0, 0, 1),
+  kind: "neutral", opacity: 0.35, enabled: true, radius: 22.4, color: rgba(0, 0, 0, 1),
 });
 
 export interface Translucency { enabled: boolean; value: number }

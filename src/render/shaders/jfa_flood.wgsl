@@ -11,14 +11,18 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
 
     var best  = textureLoad(seedTex, ip, 0);
     var bestD = 1e20;
-    if (best.w > 0.5) { bestD = distance(p, best.xy); }
+    if (best.x >= 0.0) {
+        let delta = p - contourSeedPosition(best);
+        bestD = dot(delta, delta);
+    }
 
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         for (var dx = -1; dx <= 1; dx = dx + 1) {
             let np = clamp(ip + vec2<i32>(dx, dy) * step, vec2<i32>(0,0), dim - vec2<i32>(1,1));
             let s  = textureLoad(seedTex, np, 0);
-            if (s.w > 0.5) {
-                let d = distance(p, s.xy);
+            if (s.x >= 0.0) {
+                let delta = p - contourSeedPosition(s);
+                let d = dot(delta, delta);
                 if (d < bestD) { bestD = d; best = s; }
             }
         }

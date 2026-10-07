@@ -1,30 +1,29 @@
-// SimulatedGlass::distance_gradient - raw inside SDF + smoothed gradient (surface normal).
-// JFA produces a quantized nearest-seed field; smooth before the Sobel gradient so
-// curved SVG/PNG edges do not turn into stepped specular bands.
-// Keep out.r raw so straight corners and sharp tips do not get rounded by the normal smoothing.
-//   out.r = raw inside sdf,  out.gb = smoothed normal,  out.a = coverage
-@group(0) @binding(1) var rawSdfTex    : texture_2d<f32>;
-@group(0) @binding(2) var smoothSdfTex : texture_2d<f32>;
-@group(0) @binding(3) var samp         : sampler;
+// iOS 26.4 uses four central-difference samples, one pixel apart. Our field
+// reads split positive/negative distances in R/G and outputs signed distance in
+// R, inward normals in GB and coverage in A. Apple encodes distance and normals.
+@group(0) @binding(1) var sdfTex : texture_2d<f32>;
+@group(0) @binding(2) var normalSdfTex : texture_2d<f32>;
+@group(0) @binding(3) var samp : sampler;
+
+fn signedDistance(uv: vec2<f32>) -> f32 {
+    let field = textureSample(normalSdfTex, samp, uv);
+    return field.r - field.g;
+}
 
 @fragment
 fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
-    let t  = texel() * 1.5;   // wider step -> smoother normals (ignore JFA high-freq noise)
-    let raw = textureSample(rawSdfTex, samp, in.uv);
-    let tl = textureSample(smoothSdfTex, samp, in.uv + vec2<f32>(-t.x, -t.y)).r;
-    let tc = textureSample(smoothSdfTex, samp, in.uv + vec2<f32>( 0.0, -t.y)).r;
-    let tr = textureSample(smoothSdfTex, samp, in.uv + vec2<f32>( t.x, -t.y)).r;
-    let ml = textureSample(smoothSdfTex, samp, in.uv + vec2<f32>(-t.x,  0.0)).r;
-    let mr = textureSample(smoothSdfTex, samp, in.uv + vec2<f32>( t.x,  0.0)).r;
-    let bl = textureSample(smoothSdfTex, samp, in.uv + vec2<f32>(-t.x,  t.y)).r;
-    let bc = textureSample(smoothSdfTex, samp, in.uv + vec2<f32>( 0.0,  t.y)).r;
-    let br = textureSample(smoothSdfTex, samp, in.uv + vec2<f32>( t.x,  t.y)).r;
-
-    var g = vec2<f32>(
-        (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl),
-        (bl + 2.0 * bc + br) - (tl + 2.0 * tc + tr),
+    let t = texel();
+    let raw = textureSample(sdfTex, samp, in.uv);
+    let g = vec2<f32>(
+        signedDistance(in.uv + vec2<f32>(t.x, 0.0)) - signedDistance(in.uv - vec2<f32>(t.x, 0.0)),
+        signedDistance(in.uv + vec2<f32>(0.0, t.y)) - signedDistance(in.uv - vec2<f32>(0.0, t.y)),
     );
-    var n = vec2<f32>(0.0, 0.0);
-    if (any(g != vec2<f32>(0.0, 0.0))) { n = normalize(g); }
-    return vec4<f32>(raw.r, n.x, n.y, raw.a);
+    // Our quantized JFA field needs conditioning before Apple's central
+    // differences. At medial axes, do not amplify a near-zero gradient into
+    // opposite unit normals on adjacent pixels. A true SDF has gradient 1.
+    let expectedGradient = 2.0 / max(sdfRange(), 1.0);
+    let n = g / max(length(g), expectedGradient);
+    // Retain negative distance at AA texels outside the 50% contour. Clamping
+    // it to zero makes fwidth see a plateau and misplaces the highlight edge.
+    return vec4<f32>(raw.r - raw.g, n.x, n.y, raw.a);
 }

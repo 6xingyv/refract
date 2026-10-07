@@ -1,5 +1,6 @@
 import type { BindKind, Format, RenderBackend, RenderEncoder, RenderPipeline, RenderSampler, RenderUniform, Tex } from "./backend";
 import { GLSL_FRAGMENT, GLSL_VERTEX } from "./glsl";
+import { TexturePool } from "./texturePool";
 
 interface GlTex extends Tex {
   texture: WebGLTexture;
@@ -18,6 +19,7 @@ export class WebGlGpu implements RenderBackend {
   readonly kind = "webgl2" as const;
   private pipelines = new Map<string, GlPipeline>();
   private transient: GlTex[] = [];
+  private texturePool = new TexturePool<GlTex>(64 * 1024 * 1024, (t) => this.destroyTexture(t));
   private vao: WebGLVertexArrayObject;
 
   private constructor(private canvas: HTMLCanvasElement, private gl: WebGL2RenderingContext) {
@@ -53,6 +55,11 @@ export class WebGlGpu implements RenderBackend {
   }
 
   texture(w: number, h: number, format: Format, render: boolean, persistent = false): Tex {
+    const reused = persistent ? undefined : this.texturePool.take(w, h, format, render);
+    if (reused) {
+      this.transient.push(reused);
+      return reused;
+    }
     const gl = this.gl;
     const texture = gl.createTexture();
     if (!texture) throw new Error("WebGL2 could not create a texture.");
@@ -170,7 +177,7 @@ export class WebGlGpu implements RenderBackend {
   }
 
   frameDone(): void {
-    for (const t of this.transient) this.destroyTexture(t);
+    for (const t of this.transient) this.texturePool.release(t, t.framebuffer !== null);
     this.transient = [];
   }
 }

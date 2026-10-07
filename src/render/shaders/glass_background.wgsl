@@ -10,21 +10,21 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
     let dg     = textureSample(dgTex, samp, in.uv);
     let h      = dg.r;
     let normal = dg.gb;
-    let cov    = dg.a;
 
     // displacement: strongest near the edge (small h), zero deep inside
     let t    = clamp(h / max(height(), 1e-3), 0.0, 1.0);
     let disp = (1.0 - smoothstep(0.0, 1.0, t)) * refractScale();
     let refr = in.uv - disp * normal * texel();
 
+    // Apple applies an affine RGB matrix before the surface mask. The renderer
+    // supplies the container's matrix here, or identity for an already-colored
+    // scene sampled by an upper layer. It differs from the artwork's matrix. We use
+    // straight alpha between material passes and apply geometry in composite.
+    // Filtering/blur of the background is premultiplied.
     let bg = textureSample(bgTex, samp, refr);
-    if (exportAlphaMode() > 0.5 && glassOn() > 0.5) {
-        let translucentPct = clamp(translucency(), 0.0, 1.0);
-        let bottomAlpha = 1.0 - translucentPct;
-        let shapeHeight = max(shapeBottom() - shapeTop(), texel().y);
-        let shapeY = clamp((in.uv.y - shapeTop()) / shapeHeight, 0.0, 1.0);
-        let materialAlpha = mix(1.0, bottomAlpha, shapeY);
-        return vec4<f32>(bg.rgb, cov * materialAlpha);
-    }
-    return vec4<f32>(bg.rgb, cov * glassOn());
+    let rgb = appearanceRgb(bg.rgb / max(bg.a, 1e-6));
+    let alpha = select(bg.a, bg.a * materialMask(in.uv, dg.r), exportAlphaMode() > 0.5);
+    // This is local material opacity. Shape coverage is applied once in
+    // composite after the color coating has been blended over the glass.
+    return vec4<f32>(rgb, alpha * glassOn());
 }

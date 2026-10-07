@@ -2,8 +2,9 @@
 // The pass graph in renderer.ts stays backend-agnostic; the WGSL shaders are reused verbatim.
 
 import type { BindKind, Format, RenderBackend, RenderEncoder, RenderPipeline, RenderSampler, RenderUniform, Tex } from "./backend";
+import { TexturePool } from "./texturePool";
 
-interface GpuTex extends Tex { tex: GPUTexture; view: GPUTextureView }
+interface GpuTex extends Tex { tex: GPUTexture; view: GPUTextureView; render: boolean }
 interface GpuPipeline extends RenderPipeline { pipeline: GPURenderPipeline; layout: GPUBindGroupLayout; bindings: BindKind[] }
 
 export class Gpu implements RenderBackend {
@@ -11,7 +12,8 @@ export class Gpu implements RenderBackend {
   device!: GPUDevice;
   private pipelines = new Map<string, GpuPipeline>();
   private _sampler?: GPUSampler;
-  private transient: GPUTexture[] = [];
+  private transient: GpuTex[] = [];
+  private texturePool = new TexturePool<GpuTex>(64 * 1024 * 1024, (t) => t.tex.destroy());
   private buffers: GPUBuffer[] = [];
 
   static async create(): Promise<Gpu> {
@@ -31,11 +33,17 @@ export class Gpu implements RenderBackend {
   }
 
   texture(w: number, h: number, format: Format, render: boolean, persistent = false): GpuTex {
+    const reused = persistent ? undefined : this.texturePool.take(w, h, format, render);
+    if (reused) {
+      this.transient.push(reused);
+      return reused;
+    }
     let usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
     if (render) usage |= GPUTextureUsage.RENDER_ATTACHMENT;
     const tex = this.device.createTexture({ size: { width: w, height: h }, format, usage });
-    if (!persistent) this.transient.push(tex);
-    return { tex, view: tex.createView(), w, h, format };
+    const texture = { tex, view: tex.createView(), w, h, format, render };
+    if (!persistent) this.transient.push(texture);
+    return texture;
   }
 
   /** Upload RGBA8 bytes (Uint8Array, length w*h*4). */
@@ -110,20 +118,23 @@ export class Gpu implements RenderBackend {
     const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
     const buf = this.device.createBuffer({ size: bytesPerRow * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     const ownEncoder = (enc as GPUCommandEncoder | undefined) ?? this.commandEncoder();
-    ownEncoder.copyTextureToBuffer({ texture: (t as GpuTex).tex }, { buffer: buf, bytesPerRow, rowsPerImage: h }, { width: w, height: h });
-    this.submit(ownEncoder);
-    await buf.mapAsync(GPUMapMode.READ);
-    const src = new Uint8Array(buf.getMappedRange());
-    const out = new Uint8ClampedArray(w * h * 4);
-    for (let y = 0; y < h; y++) out.set(src.subarray(y * bytesPerRow, y * bytesPerRow + w * 4), y * w * 4);
-    buf.unmap();
-    buf.destroy();
-    return out;
+    try {
+      ownEncoder.copyTextureToBuffer({ texture: (t as GpuTex).tex }, { buffer: buf, bytesPerRow, rowsPerImage: h }, { width: w, height: h });
+      this.submit(ownEncoder);
+      await buf.mapAsync(GPUMapMode.READ);
+      const src = new Uint8Array(buf.getMappedRange());
+      const out = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y++) out.set(src.subarray(y * bytesPerRow, y * bytesPerRow + w * 4), y * w * 4);
+      return out;
+    } finally {
+      if (buf.mapState === "mapped") buf.unmap();
+      buf.destroy();
+    }
   }
 
   /** Recycle per-frame textures + uniform buffers (pipelines + sampler survive). */
   frameDone() {
-    for (const t of this.transient) t.destroy();
+    for (const t of this.transient) this.texturePool.release(t, t.render);
     for (const b of this.buffers) b.destroy();
     this.transient = [];
     this.buffers = [];

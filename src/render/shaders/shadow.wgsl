@@ -6,7 +6,12 @@
 @fragment
 fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
     let off = shadowOffset() * texel();
-    let sh  = textureSample(covTex, samp, in.uv - off);
+    let uv = in.uv - off;
+    // A shifted shadow has no source beyond the icon canvas. Clamp-to-edge
+    // sampling alone would extend an opaque edge into a solid shadow stripe.
+    let sh = textureSample(covTex, samp, uv) * select(0.0, 1.0, all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0)));
     let rgb = sh.rgb / max(sh.a, 1e-5);
-    return vec4<f32>(rgb, sh.a * shadowOpacity());
+    // Draw opacity is applied after the receiver-dependent blend. Folding it
+    // into this alpha changes plusDarker on partially transparent receivers.
+    return vec4<f32>(rgb, sh.a);
 }

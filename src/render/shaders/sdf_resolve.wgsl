@@ -9,10 +9,12 @@
 fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
     let ip  = vec2<i32>(floor(in.pos.xy));
     let cov = textureLoad(shapeTex, ip, 0).a;   // anti-aliased coverage
-    let inside = cov > 0.0;
+    // Coverage is the geometric mask, independent of coating/layer opacity.
+    // Its 50% contour sets the sign, while original AA coverage stays in A.
+    let inside = cov >= 0.5;
     let s = textureLoad(seedTex, ip, 0);
-    var dist = 0.0;
-    if (s.w > 0.5) { dist = distance(vec2<f32>(ip), s.xy); }
+    var dist = sdfRange();
+    if (s.x >= 0.0) { dist = distance(vec2<f32>(ip), contourSeedPosition(s)); }
 
     let n = clamp(dist / max(sdfRange(), 1.0), 0.0, 1.0);
     if (inside) { return vec4<f32>(n, 0.0, 0.0, cov); }

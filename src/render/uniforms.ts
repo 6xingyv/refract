@@ -1,66 +1,74 @@
-// Builds the Float32Array(48) = 12 vec4 that maps 1:1 to common.wgsl.inc (port of Uniforms.kt).
+// 18 vec4 slots shared by the WGSL and GLSL material passes.
 import { IconDocument, Group, Layer, IcColor, RENDITIONS } from "../model/types";
+import { artworkColorMatrix } from "./appearance";
+import { shadowParameters } from "./shadowParameters";
+import { glyphHighlightParameters } from "./highlightParameters";
+import { materialBlurSigma } from "./blurParameters";
 
 export interface ShapeBounds {
   top: number;
   bottom: number;
+  left: number;
+  right: number;
 }
 
 export function buildUniforms(
   size: number, doc: IconDocument, group: Group, layer: Layer,
   sampledColor: IcColor | null, usesAssetColor: boolean,
-  shapeBounds: ShapeBounds = { top: 0, bottom: 1 },
+  shapeBounds: ShapeBounds = { top: 0, bottom: 1, left: 0, right: 1 },
 ): Float32Array<ArrayBuffer> {
   const res = size, texel = 1 / size;
   const ap = RENDITIONS[doc.previewRendition].appearanceCode;
-  const sp = layer.specular.enabled ? layer.specular : group.specular;
+  const sp = group.specular;
 
   const sdfRangePx = 0.18 * res;
-  const heightNorm = Math.min(0.9, Math.max(0.02, sp.height / 60));
+  // Refraction's local geometry bevel is independent of highlight width.
+  const heightNorm = Math.max(0.5, 3 * res / 1024) / sdfRangePx;
+  const highlight = glyphHighlightParameters(res, sp.height);
+  const highlightWidthPx = Math.max(0, highlight.width) * res / 1024;
+  const highlightInsetPx = Math.max(highlight.minInsetPixels, highlight.inset * res / 1024);
+  const highlightCurvature = sp.curvature ?? highlight.curvature;
+  // ICRRenderingParameters.glyphTranslucentBorderWidth = 25.8 design points.
+  // The coating's contour transition is independent of the specular bevel.
+  const translucentBorderNorm = Math.max(0.5, 25.8 * res / 1024) / sdfRangePx;
   const refractScalePx = 0.045 * res;
   const lr = (doc.lightAngleDeg * Math.PI) / 180;
   const ldx = Math.cos(lr), ldy = Math.sin(lr);
 
   const glassOn = group.glassEnabled && layer.isGlass ? 1 : 0;
   const specOn = glassOn > 0 && group.specular.enabled && sp.enabled ? 1 : 0;
-  const glowOn = 0, glowRadiusNorm = 0.5;
+  const glowRadiusNorm = 0.5;
 
-  const blurOn = group.glassEnabled && group.blurMaterial.enabled;
-  const blurPx = blurOn ? group.blurMaterial.strength * 0.1 * res : 0;
+  const blurSigmaPx = group.glassEnabled ? materialBlurSigma(group.blurMaterial, res) : 0;
 
-  const shadowOn = group.shadow.enabled;
-  const layerColorShadowOn = shadowOn && group.shadow.kind === "layerColor";
-  // Apple shadows are present but restrained; document opacity scaled down for preview/export.
-  const shadowPx = shadowOn ? group.shadow.radius * 1.1 * (res / 512) : 0;
-  const shadowOpacity = shadowOn ? group.shadow.opacity * 0.65 : 0;
-  const shadowOffY = shadowOn ? group.shadow.radius * 0.24 * (res / 512) : 0;
-  const sc = group.shadow.color;
+  const shadow = shadowParameters(group.shadow, res);
 
   const translucency = group.glassEnabled && group.translucency.enabled
     ? Math.min(1, Math.max(0, group.translucency.value > 1 ? group.translucency.value / 100 : group.translucency.value))
     : 0;
 
   const gc = sampledColor ?? (layer.fill.kind !== "none" ? layer.fill.primaryColor : sp.color);
-  const gcAmount = usesAssetColor ? 1 : layer.fill.kind !== "none" ? 0.65 * gc.a : 0;
+  const gcAmount = usesAssetColor ? 1 : layer.fill.kind !== "none" ? gc.a : 0;
 
-  const tintC = doc.tintColor;
-  const tintStrength = ap === 4 ? doc.tintStrength : 0;
   const shapeTop = Math.max(0, Math.min(1 - texel, shapeBounds.top));
   const shapeBottom = Math.max(shapeTop + texel, Math.min(1, shapeBounds.bottom));
 
   return new Float32Array([
     res, res, texel, texel,
-    sdfRangePx, heightNorm, refractScalePx, sp.curvature,
+    sdfRangePx, heightNorm, refractScalePx, highlightCurvature,
     ldx, ldy, sp.spread, sp.biasAmount,
-    glowRadiusNorm, blurPx, shadowPx, shadowOpacity,
+    glowRadiusNorm, blurSigmaPx, shadow.sigma, shadow.opacity,
     0, 0, 0, ap,
     gc.r, gc.g, gc.b, gcAmount,
-    tintC.r, tintC.g, tintC.b, tintStrength,
-    sc.r, sc.g, sc.b, 0,
-    0, shadowOffY, specOn, glowOn,
-    glassOn, translucency, usesAssetColor ? 1 : 0, layerColorShadowOn ? 1 : 0,
-    shapeTop, shapeBottom, 0, 0,
-    0, 0, 0, 0,
+    highlightWidthPx, highlightWidthPx, highlightCurvature, sp.spread,
+    0, 0, 0, highlight.staticOpacity, // Neutral shadow RGB, static highlight opacity in W
+    shadow.offsetX, shadow.offsetY, specOn, highlight.dynamicOpacity,
+    glassOn, translucency, usesAssetColor ? 1 : 0, shadow.vibrant ? 1 : 0,
+    shapeTop, shapeBottom, shapeBounds.left, shapeBounds.right,
+    0, 0, 1, translucentBorderNorm, // export alpha, scene output, item opacity, coating border
+    sp.color.r, sp.color.g, sp.color.b, sp.color.a,
+    ...artworkColorMatrix(doc),
+    highlightInsetPx, 0, 0, 0, // materialExtra: glyph inset, coating blend, reserved
   ]);
 }
 
