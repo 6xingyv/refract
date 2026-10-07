@@ -1,7 +1,11 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
+
+mod render;
+use render::{render_layer_thumb, render_layer_thumbs, render_preview, render_previews};
 
 const POPOVER_LABEL_PREFIX: &str = "refract-popover-";
 #[cfg(target_os = "macos")]
@@ -86,15 +90,58 @@ fn read_icon(path: String) -> Result<IconPackage, String> {
 /// Write a `.icon` package: icon.json + Assets/ (assets carry base64 bytes).
 #[tauri::command]
 fn save_icon(path: String, json: String, assets: Vec<AssetIn>) -> Result<(), String> {
+    // Validate the complete payload before touching an existing package. The
+    // Assets directory is flat, and every image override needs its source file.
+    let root: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    let mut names = HashSet::new();
+    let mut portable_names = HashSet::new();
+    let mut decoded_assets = Vec::new();
+    for asset in assets {
+        if asset.name.is_empty()
+            || asset.name == "."
+            || asset.name == ".."
+            || asset.name.contains(['/', '\\', ':'])
+        {
+            return Err(format!("Asset name must be a basename: {}", asset.name));
+        }
+        if !portable_names.insert(asset.name.to_lowercase()) {
+            return Err(format!("Duplicate asset filename: {}", asset.name));
+        }
+        let bytes = STANDARD.decode(&asset.data).map_err(|e| format!("{}: {}", asset.name, e))?;
+        if bytes.is_empty() {
+            return Err(format!("Referenced asset is empty: {}", asset.name));
+        }
+        names.insert(asset.name.clone());
+        decoded_assets.push((asset.name, bytes));
+    }
+    if let Some(groups) = root.get("groups").and_then(serde_json::Value::as_array) {
+        for group in groups {
+            if let Some(layers) = group.get("layers").and_then(serde_json::Value::as_array) {
+                for layer in layers {
+                    let mut references = Vec::new();
+                    if let Some(name) = layer.get("image-name").and_then(serde_json::Value::as_str) {
+                        references.push(name);
+                    }
+                    if let Some(entries) = layer.get("image-name-specializations").and_then(serde_json::Value::as_array) {
+                        references.extend(entries.iter().filter_map(|entry| entry.get("value").and_then(serde_json::Value::as_str)));
+                    }
+                    for name in references {
+                        if !names.contains(name) {
+                            return Err(format!("Referenced asset is missing: {name}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
     let dir = PathBuf::from(&path);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let assets_dir = dir.join("Assets");
     fs::create_dir_all(&assets_dir).map_err(|e| e.to_string())?;
-    fs::write(dir.join("icon.json"), json).map_err(|e| e.to_string())?;
-    for a in assets {
-        let bytes = STANDARD.decode(&a.data).map_err(|e| e.to_string())?;
-        fs::write(assets_dir.join(&a.name), bytes).map_err(|e| e.to_string())?;
+    for (name, bytes) in decoded_assets {
+        fs::write(assets_dir.join(name), bytes).map_err(|e| e.to_string())?;
     }
+    fs::write(dir.join("icon.json"), json).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -379,6 +426,10 @@ pub fn run() {
             save_icon,
             export_pngs,
             read_image_assets,
+            render_preview,
+            render_previews,
+            render_layer_thumb,
+            render_layer_thumbs,
             native_popover_metrics,
             set_native_popover_appearance
         ])
