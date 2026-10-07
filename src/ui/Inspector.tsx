@@ -1,10 +1,13 @@
 import { useStore, ICON_ID } from "../state/store";
-import { replaceGroup, replaceLayer, setCompositionFillSpec, findGroup, findLayer } from "../model/document";
+import { replaceGroup, replaceLayer, setCompositionFillSpec, findGroup, findLayer, setMemberHidden, setMemberOpacity, clearMemberOverride, clearVisibilityOverride } from "../model/document";
+import { resolveMemberVisibility } from "../model/memberVisibility";
 import {
   Group, Layer, GroupSpec, LayerSpec, Lighting, ShadowKind, FillKind, Fill, BlendMode, IconDocument, Platform,
   Appearance, APPEARANCES, slotOf, blendDisplay, resolveGroup, resolveLayer, resolveCompositionFill, PLATFORMS, allLayers,
 } from "../model/types";
 import { appleGradientAngleToInternal, internalGradientAngleToApple } from "../model/angles";
+import { materialAppearance } from "../render/appearance";
+import { MAX_MATERIAL_BLUR_STRENGTH } from "../render/blurParameters";
 import { Section, Row, Toggle, Pct, ValueChip, Select, Variation, ColorWell } from "./widgets";
 import type { ChromePlatform } from "./WindowChrome";
 
@@ -48,7 +51,9 @@ export function Inspector({ chromePlatform }: { chromePlatform: ChromePlatform }
   const group = findGroup(doc, id);
   const layer = findLayer(doc, id);
   const hasTopDrag = chromePlatform !== "mac";
-  const assetOptions = Array.from(new Set(allLayers(doc).map((l) => l.imageName).filter(Boolean) as string[]));
+  const assetOptions = Array.from(new Set(allLayers(doc).flatMap((l) =>
+    [l.imageName, ...Object.values(l.specs).map((s) => s.imageName)]
+      .filter((name): name is string => typeof name === "string"))));
 
   return (
     <div className="relative z-10 w-[300px] shrink-0 border-l border-[color:var(--line)] flex flex-col panel-surface">
@@ -56,7 +61,7 @@ export function Inspector({ chromePlatform }: { chromePlatform: ChromePlatform }
       <div className="flex-1 overflow-y-auto">
         {id === ICON_ID && <IconInspector doc={doc} update={update} appearanceVar={appearanceVar} appearance={appearance} />}
         {group && <GroupInspector g={group} slot={slot} platform={doc.previewPlatform} update={update} appearanceVar={appearanceVar} compositionVar={platformVar} />}
-        {layer && <LayerInspector l={layer} slot={slot} platform={doc.previewPlatform} update={update} appearanceVar={appearanceVar} compositionVar={platformVar} assetOptions={assetOptions} />}
+        {layer && <LayerInspector l={layer} parent={doc.composition.groups.find((g) => g.layers.some((l) => l.id === layer.id))} slot={slot} platform={doc.previewPlatform} update={update} appearanceVar={appearanceVar} compositionVar={platformVar} assetOptions={assetOptions} />}
         {id !== ICON_ID && !group && !layer && <div className="p-4 text-[12px] text-[color:var(--tx-3)]">Select a member</div>}
       </div>
     </div>
@@ -95,10 +100,9 @@ function IconInspector({ doc, update, appearanceVar, appearance }: { doc: IconDo
       <Section title="Color" variation={appearanceVar}>
         <FillEditor fill={f} onChange={setFill} />
       </Section>
-      {appearance === "Mono" && (
+      {appearance === "Mono" && materialAppearance(doc.previewRendition).material === "tinted" && (
         <Section title="Tint">
-          <Row label="Tint background"><Toggle on={doc.tintStrength > 0} onChange={(v) => update((d) => ({ ...d, tintStrength: v ? 1 : 0 }))} /></Row>
-          {doc.tintStrength > 0 && <Row label="Color"><ColorWell color={doc.tintColor} onChange={(c) => update((d) => ({ ...d, tintColor: c }))} /></Row>}
+          <Row label="Color"><ColorWell color={doc.tintColor} onChange={(c) => update((d) => ({ ...d, tintColor: c }))} /></Row>
         </Section>
       )}
       <Section title="Platforms">
@@ -160,7 +164,7 @@ function PlatformsEditor({ doc, update }: { doc: IconDocument; update: Upd }) {
 
 function GroupInspector({ g, slot, platform, update, appearanceVar, compositionVar }: { g: Group; slot: string | null; platform: Platform; update: Upd; appearanceVar: React.ReactNode; compositionVar: React.ReactNode }) {
   const eg = resolveGroup(g, slot);
-  const cg = resolveGroup(g, null, platform);
+  const cg = resolveGroup(g, slot, platform);
   const apply = (spec: (s: GroupSpec) => GroupSpec, base: (g: Group) => Group) =>
     update((d) => replaceGroup(d, slot == null ? base(g) : { ...g, specs: { ...g.specs, [slot]: spec(g.specs[slot] ?? {}) } }));
   const applyPlatform = (spec: (s: GroupSpec) => GroupSpec) =>
@@ -168,8 +172,11 @@ function GroupInspector({ g, slot, platform, update, appearanceVar, compositionV
 
   return (
     <>
+      <Section title="Visibility" variation={appearanceVar}>
+        <AppearanceVisibility member={g} hidden={eg.isHidden} slot={slot} platform={platform} update={update} />
+      </Section>
       <Section title="Color" variation={appearanceVar}>
-        <Row label="Opacity"><Pct value={eg.opacity} onChange={(v) => apply((s) => ({ ...s, opacity: v }), (x) => ({ ...x, opacity: v }))} /></Row>
+        <OpacityEditor member={g} opacity={eg.opacity} slot={slot} update={update} />
         <Row label="Blend Mode"><Select value={blendDisplay(eg.blendMode)} options={BLENDS.map(blendDisplay)} onChange={(n) => { const b = fromBlendLabel(n); apply((s) => ({ ...s, blendMode: b }), (x) => ({ ...x, blendMode: b })); }} /></Row>
       </Section>
 
@@ -177,7 +184,7 @@ function GroupInspector({ g, slot, platform, update, appearanceVar, compositionV
         <Row label="Mode"><Select value={eg.lighting === "individual" ? "Individual" : "Combined"} options={["Individual", "Combined"]} onChange={(n) => { const lg: Lighting = n === "Individual" ? "individual" : "combined"; apply((s) => ({ ...s, lighting: lg }), (x) => ({ ...x, lighting: lg })); }} /></Row>
         <Row label="Specular"><Toggle on={eg.specular.enabled} onChange={(v) => apply((s) => ({ ...s, specularEnabled: v }), (x) => ({ ...x, specular: { ...x.specular, enabled: v } }))} /></Row>
         <Row label="Blur">
-          {eg.blurMaterial.enabled && <Pct value={eg.blurMaterial.strength} onChange={(v) => { const nb = { ...eg.blurMaterial, strength: v }; apply((s) => ({ ...s, blurMaterial: nb }), (x) => ({ ...x, blurMaterial: nb })); }} />}
+          {eg.blurMaterial.enabled && <Pct value={eg.blurMaterial.strength} max={MAX_MATERIAL_BLUR_STRENGTH} onChange={(v) => { const nb = { ...eg.blurMaterial, strength: v }; apply((s) => ({ ...s, blurMaterial: nb }), (x) => ({ ...x, blurMaterial: nb })); }} />}
           <Toggle on={eg.blurMaterial.enabled} onChange={(v) => { const nb = { ...eg.blurMaterial, enabled: v }; apply((s) => ({ ...s, blurMaterial: nb }), (x) => ({ ...x, blurMaterial: nb })); }} />
         </Row>
         <Row label="Translucency">
@@ -189,11 +196,16 @@ function GroupInspector({ g, slot, platform, update, appearanceVar, compositionV
           {eg.shadow.enabled && <Pct value={eg.shadow.opacity} onChange={(v) => { const ns = { ...eg.shadow, opacity: v }; apply((s) => ({ ...s, shadow: ns }), (x) => ({ ...x, shadow: ns })); }} />}
           <Toggle on={eg.shadow.enabled} onChange={(v) => { const ns = { ...eg.shadow, enabled: v }; apply((s) => ({ ...s, shadow: ns }), (x) => ({ ...x, shadow: ns })); }} />
         </Row>
-        {eg.specular.enabled && <Row label="Highlight"><Pct value={Math.min(1, g.specular.height / 60)} onChange={(v) => update((d) => replaceGroup(d, { ...g, specular: { ...g.specular, height: Math.max(1, Math.min(60, v * 60)) } }))} /></Row>}
+        {eg.specular.enabled && <Row label="Highlight Width">
+          <Select value={g.specular.height == null ? "Automatic" : "Custom"} options={["Automatic", "Custom"]}
+            onChange={(mode) => update((d) => replaceGroup(d, { ...g, specular: { ...g.specular, height: mode === "Automatic" ? null : 12 } }))} />
+          {g.specular.height != null && <ValueChip value={g.specular.height} unit="pt"
+            onChange={(height) => update((d) => replaceGroup(d, { ...g, specular: { ...g.specular, height: Math.max(0, Math.min(60, height)) } }))} />}
+        </Row>}
       </Section>
 
       <Section title="Composition" variation={compositionVar}>
-        <Row label="Visible"><Toggle on={!cg.isHidden} onChange={(v) => applyPlatform((s) => ({ ...s, isHidden: !v }))} /></Row>
+        <PlatformVisibility member={g} hidden={cg.isHidden} platform={platform} update={update} />
         <Row label="RTL Mirror"><Toggle on={!!cg.mirrorInRTL} onChange={(v) => applyPlatform((s) => ({ ...s, mirrorInRTL: v }))} /></Row>
         <Layout pos={cg.position} scale={cg.scale} onPos={(p) => applyPlatform((s) => ({ ...s, position: p }))} onScale={(sc) => applyPlatform((s) => ({ ...s, scale: sc }))} />
       </Section>
@@ -201,9 +213,9 @@ function GroupInspector({ g, slot, platform, update, appearanceVar, compositionV
   );
 }
 
-function LayerInspector({ l, slot, platform, update, appearanceVar, compositionVar, assetOptions }: { l: Layer; slot: string | null; platform: Platform; update: Upd; appearanceVar: React.ReactNode; compositionVar: React.ReactNode; assetOptions: string[] }) {
+function LayerInspector({ l, parent, slot, platform, update, appearanceVar, compositionVar, assetOptions }: { l: Layer; parent?: Group; slot: string | null; platform: Platform; update: Upd; appearanceVar: React.ReactNode; compositionVar: React.ReactNode; assetOptions: string[] }) {
   const el = resolveLayer(l, slot);
-  const cl = resolveLayer(l, null, platform);
+  const cl = resolveLayer(l, slot, platform);
   const apply = (spec: (s: LayerSpec) => LayerSpec, base: (l: Layer) => Layer) =>
     update((d) => replaceLayer(d, slot == null ? base(l) : { ...l, specs: { ...l.specs, [slot]: spec(l.specs[slot] ?? {}) } }));
   const applyPlatform = (spec: (s: LayerSpec) => LayerSpec) =>
@@ -213,20 +225,68 @@ function LayerInspector({ l, slot, platform, update, appearanceVar, compositionV
   if (imageValue !== "None" && !imageOptions.includes(imageValue)) imageOptions.splice(1, 0, imageValue);
   return (
     <>
+      <Section title="Visibility" variation={appearanceVar}>
+        <AppearanceVisibility member={l} parent={parent} hidden={el.isHidden} slot={slot} platform={platform} update={update} />
+      </Section>
       <Section title="Color" variation={appearanceVar}>
         <Row label="Image"><Select value={imageValue} options={imageOptions} onChange={(n) => { const imageName = n === "None" ? null : n; apply((s) => ({ ...s, imageName }), (x) => ({ ...x, imageName })); }} /></Row>
         <FillEditor fill={el.fill} onChange={(fill) => apply((s) => ({ ...s, fill }), (x) => ({ ...x, fill }))} />
-        <Row label="Opacity"><Pct value={el.opacity} onChange={(v) => apply((s) => ({ ...s, opacity: v }), (x) => ({ ...x, opacity: v }))} /></Row>
+        <OpacityEditor member={l} opacity={el.opacity} slot={slot} update={update} />
         <Row label="Blend Mode"><Select value={blendDisplay(el.blendMode)} options={BLENDS.map(blendDisplay)} onChange={(n) => { const b = fromBlendLabel(n); apply((s) => ({ ...s, blendMode: b }), (x) => ({ ...x, blendMode: b })); }} /></Row>
       </Section>
       <Section title="Liquid Glass" variation={appearanceVar}>
         <Row label="Glass"><Toggle on={el.isGlass} onChange={(v) => apply((s) => ({ ...s, isGlass: v }), (x) => ({ ...x, isGlass: v }))} /></Row>
       </Section>
       <Section title="Composition" variation={compositionVar}>
-        <Row label="Visible"><Toggle on={!cl.isHidden} onChange={(v) => applyPlatform((s) => ({ ...s, isHidden: !v }))} /></Row>
+        <PlatformVisibility member={l} hidden={cl.isHidden} platform={platform} update={update} />
         <Row label="RTL Mirror"><Toggle on={!!cl.mirrorInRTL} onChange={(v) => applyPlatform((s) => ({ ...s, mirrorInRTL: v }))} /></Row>
         <Layout pos={cl.position} scale={cl.scale} onPos={(p) => applyPlatform((s) => ({ ...s, position: p }))} onScale={(sc) => applyPlatform((s) => ({ ...s, scale: sc }))} />
       </Section>
+    </>
+  );
+}
+
+function OpacityEditor({ member, opacity, slot, update }: {
+  member: Group | Layer; opacity: number; slot: string | null; update: Upd;
+}) {
+  const overridden = slot != null && member.specs[slot]?.opacity != null;
+  return (
+    <>
+      {slot != null && <Row label="Override Opacity"><Toggle on={overridden} onChange={(on) => update((d) =>
+        on ? setMemberOpacity(d, member.id, opacity, slot) : clearMemberOverride(d, member.id, slot, "opacity"))} /></Row>}
+      <Row label="Opacity"><Pct value={opacity} onChange={(v) => update((d) => setMemberOpacity(d, member.id, v, slot))} /></Row>
+    </>
+  );
+}
+
+function AppearanceVisibility({ member, parent, hidden, slot, platform, update }: {
+  member: Group | Layer; parent?: Group; hidden: boolean; slot: string | null; platform: Platform; update: Upd;
+}) {
+  const overridden = slot != null && member.specs[slot]?.isHidden != null;
+  const state = resolveMemberVisibility(member, slot, platform, parent);
+  return (
+    <>
+      <div className="text-[11px] text-[color:var(--tx-3)] pb-1" role="status">{state.description}</div>
+      {slot != null && <Row label="Override Hidden"><Toggle on={overridden} onChange={(on) => update((d) =>
+        on ? setMemberHidden(d, member.id, hidden, slot) : clearVisibilityOverride(d, member.id, slot))} /></Row>}
+      <Row label="Hidden"><Toggle on={hidden} onChange={(v) => update((d) => setMemberHidden(d, member.id, v, slot))} /></Row>
+      {member.specs[platform]?.isHidden != null && <div className="text-[11px] text-[color:var(--tx-3)] pb-1">
+        Preview visibility is overridden by {PLATFORMS[platform].displayName}
+      </div>}
+    </>
+  );
+}
+
+function PlatformVisibility({ member, hidden, platform, update }: {
+  member: Group | Layer; hidden: boolean; platform: Platform; update: Upd;
+}) {
+  const overridden = member.specs[platform]?.isHidden != null;
+  return (
+    <>
+      <Row label="Override Hidden"><Toggle on={overridden} onChange={(on) => update((d) =>
+        on ? setMemberHidden(d, member.id, hidden, platform) : clearVisibilityOverride(d, member.id, platform))} /></Row>
+      {overridden ? <Row label="Hidden"><Toggle on={hidden} onChange={(v) => update((d) => setMemberHidden(d, member.id, v, platform))} /></Row>
+        : <div className="text-[11px] text-[color:var(--tx-3)] pb-1">Inherits appearance hidden flag</div>}
     </>
   );
 }

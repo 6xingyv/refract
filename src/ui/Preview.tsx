@@ -1,8 +1,8 @@
-import { useRef } from "react";
-import { Grid3x3, ChevronUp, ChevronDown, FolderOpen, Save, Download } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { Grid3x3, ChevronUp, ChevronDown, FolderOpen, Save, Download, Play, Pause } from "lucide-react";
 import { useStore } from "../state/store";
-import type { Rendition, Platform, Appearance } from "../model/types";
-import { PLATFORMS, renditionOf } from "../model/types";
+import type { Platform, MonoPreviewRendition } from "../model/types";
+import { PLATFORMS, ARTWORK_RENDITIONS, appearanceOf } from "../model/types";
 import { appleSourceAngleToInternal, internalSourceAngleToApple, normalizeInternalAngle } from "../model/angles";
 import { BG_PRESETS, presetCss } from "../render/backdrop";
 import gridSquare from "../assets/grid-square.png";
@@ -24,13 +24,16 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
   const setZoom = useStore((s) => s.setZoom);
   const update = useStore((s) => s.update);
   const setLightAngle = useStore((s) => s.setLightAngle);
+  const animateLight = useStore((s) => s.animateLight);
+  const setAnimateLight = useStore((s) => s.setAnimateLight);
   const rendering = useStore((s) => s.rendering);
   const error = useStore((s) => s.error);
   const openIcon = useStore((s) => s.openIcon);
   const saveIcon = useStore((s) => s.saveIcon);
   const exportPng = useStore((s) => s.exportPng);
+  const setPreviewRendition = useStore((s) => s.setPreviewRendition);
+  const monoPreviewRendition = useStore((s) => s.monoPreviewRendition);
   const appearance = useStore((s) => s.appearance);
-  const setAppearance = useStore((s) => s.setAppearance);
   const bgKind = useStore((s) => s.bgKind);
   const bgImage = useStore((s) => s.bgImage);
   const bgColor = useStore((s) => s.bgColor);
@@ -41,6 +44,36 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
   const wallpaperRef = useRef<HTMLButtonElement>(null);
   const colorRef = useRef<HTMLButtonElement>(null);
   const exportRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!animateLight) return;
+    // A desktop preview sweep, not an emulation of Apple's motion sensor.
+    // Use elapsed time and stop producing updates while hidden/reduced-motion.
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let frame = 0;
+    let previous: number | undefined;
+    const tick = (now: number) => {
+      if (previous === undefined) previous = now;
+      if (now - previous >= 1000 / 24) {
+        const dt = Math.min(now - previous, 100);
+        previous = now;
+        setLightAngle(useStore.getState().lightAngleDeg + dt * 0.03);
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    const resume = () => {
+      cancelAnimationFrame(frame);
+      previous = undefined;
+      if (!document.hidden && !reducedMotion.matches) frame = requestAnimationFrame(tick);
+    };
+    document.addEventListener("visibilitychange", resume);
+    reducedMotion.addEventListener("change", resume);
+    resume();
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("visibilitychange", resume);
+      reducedMotion.removeEventListener("change", resume);
+    };
+  }, [animateLight, setLightAngle]);
   const setPlat = (p: Platform) => update((d) => ({ ...d, previewPlatform: p }));
   const requestExport = async () => {
     if (!exportRef.current) return;
@@ -64,7 +97,12 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
   if (supported.includes("watchOS")) platTiles.push({ key: "watchOS", label: "watchOS", platform: "watchOS", circle: true });
   const pvUrl = (p: Platform) => platformVariants.find((v) => v.id === p)?.url;
 
-  const selRend = renditionOf(appearance);
+  const monoSelected = appearanceOf(doc.previewRendition) === "Mono";
+  const selectedArtwork = appearanceOf(doc.previewRendition);
+  const monoTinted = monoPreviewRendition.startsWith("Tinted");
+  const monoDark = monoPreviewRendition.endsWith("Dark");
+  const selectMonoMode = (tinted: boolean, dark: boolean) =>
+    setPreviewRendition(`${tinted ? "Tinted" : "Clear"}${dark ? "Dark" : "Light"}` as MonoPreviewRendition);
   const darkBackdrop = bgKind === "image" || luminance(bgColor) < 0.5;
   // grid overlay sized to match the scene icon (centre pane = window minus the side panels/bars)
   const gridPx = Math.min(Math.max(120, (viewW || 0) - 530), Math.max(120, (viewH || 0) - 136)) * 0.62 * Math.min(2.5, Math.max(0.4, zoom));
@@ -120,8 +158,14 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
         {/* light angle */}
         <LightAngleControl
           value={lightAngleDeg}
-          onChange={setLightAngle}
+          onChange={(angle) => { setAnimateLight(false); setLightAngle(angle); }}
         />
+        <button aria-label={animateLight ? "Pause light" : "Animate light"}
+          aria-pressed={animateLight} data-tooltip={animateLight ? "Pause light" : "Animate light"}
+          className="control-pill flex items-center justify-center w-[26px] h-[26px]"
+          onClick={() => setAnimateLight(!animateLight)}>
+          {animateLight ? <Pause size={12} /> : <Play size={12} />}
+        </button>
 
         {/* zoom */}
         <div className="control-pill flex items-center h-[26px] pl-2.5 pr-1.5 gap-1" data-tauri-no-drag>
@@ -149,11 +193,23 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
               selected={doc.previewPlatform === t.platform} onClick={() => setPlat(t.platform)} />
           ))}
         </div>
-        <div className="flex gap-3">
-          {(variants.length ? variants : APP_FALLBACK).map((v) => (
-            <Tile key={v.id} label={v.id} url={v.url} circle={PLATFORMS[doc.previewPlatform].circle}
-              selected={selRend === v.id} onClick={() => setAppearance(v.id as Appearance)} />
-          ))}
+        <div className="flex items-end gap-4 min-w-0">
+          {appearance === "All" && <span className="text-[11px] text-[color:var(--tx-3)] pb-1">All (base)</span>}
+          {monoSelected && (
+            <div className="flex flex-col gap-1.5" aria-label="Mono preview">
+              <PreviewSwitch label="Mono material" choices={["Clear", "Tinted"]} selected={monoTinted ? 1 : 0}
+                onChange={(index) => selectMonoMode(index === 1, monoDark)} />
+              <PreviewSwitch label="Mono brightness" choices={["Light", "Dark"]} selected={monoDark ? 1 : 0}
+                onChange={(index) => selectMonoMode(monoTinted, index === 1)} />
+            </div>
+          )}
+          <div className="flex gap-3">
+            {ARTWORK_RENDITIONS.map((id) => (
+              <Tile key={id} label={id} url={variants.find((v) => v.id === id)?.url}
+                circle={PLATFORMS[doc.previewPlatform].circle} selected={appearance !== "All" && selectedArtwork === id}
+                onClick={() => setPreviewRendition(id === "Mono" ? monoPreviewRendition : id)} />
+            ))}
+          </div>
         </div>
       </div>
 
@@ -164,15 +220,29 @@ export function Preview({ chromePlatform: _chromePlatform }: { chromePlatform: C
   );
 }
 
-const APP_FALLBACK: { id: Rendition; url?: string }[] = [{ id: "Default" }, { id: "Dark" }, { id: "Mono" }];
+function PreviewSwitch({ label, choices, selected, onChange }: {
+  label: string; choices: [string, string]; selected: number; onChange: (index: number) => void;
+}) {
+  return (
+    <div role="group" aria-label={label} className="control-pill flex p-0.5 gap-0.5 text-[11px]">
+      {choices.map((choice, index) => (
+        <button key={choice} aria-pressed={selected === index} onClick={() => onChange(index)}
+          className={`px-2 py-0.5 rounded-full ${selected === index ? "control-pill-active text-accent" : "text-[color:var(--tx-2)]"}`}>
+          {choice}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function Tile({ label, url, selected, onClick, circle }: { label: string; url?: string; selected: boolean; onClick: () => void; circle?: boolean }) {
   return (
-    <div className="relative flex flex-col items-center" data-tooltip={label} data-tooltip-placement="top">
+    <div className="relative flex flex-col items-center shrink-0" data-tooltip={label} data-tooltip-placement="top">
       <button onClick={onClick}
         className={`w-[44px] h-[44px] overflow-hidden bg-[color:var(--chip)] ${circle ? "rounded-full" : "rounded-[10px]"} ${selected ? "ring-2 ring-accent ring-offset-2 ring-offset-transparent" : "ring-1 ring-[color:var(--line)]"}`}>
         {url && <img src={url} className="w-full h-full" draggable={false} />}
       </button>
+      <span className="mt-1 text-[11px] text-[color:var(--tx-2)]">{label}</span>
     </div>
   );
 }

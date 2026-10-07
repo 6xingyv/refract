@@ -53,9 +53,9 @@ export function ValueChip({ value, unit, onChange, w = "min-w-[52px]" }: { value
   );
 }
 
-/** Percentage chip (model value 0..1 shown as %). */
-export function Pct({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  return <ValueChip value={Math.round(value * 100)} unit="%" onChange={(n) => onChange(Math.max(0, Math.min(100, n)) / 100)} />;
+/** Percentage chip; max is a model scalar (1 = 100%). */
+export function Pct({ value, onChange, max = 1 }: { value: number; onChange: (v: number) => void; max?: number }) {
+  return <ValueChip value={Math.round(value * 100)} unit="%" onChange={(n) => onChange(Math.max(0, Math.min(max * 100, n)) / 100)} />;
 }
 
 type DropdownKind = "chip" | "plain";

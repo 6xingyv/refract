@@ -1,7 +1,7 @@
 // Pure document operations (doc -> doc), ported from DocumentOps.kt.
 import {
   IconDocument, Group, Layer, Fill, newGroup, newLayer, defaultFill, rgba,
-  newId,
+  newId, resolveGroup, resolveLayer,
 } from "./types";
 
 const baseName = (file: string) => file.replace(/\.[^.]+$/, "");
@@ -121,14 +121,52 @@ export function pasteMember(doc: IconDocument, member: CopiedMember, selectedId:
   return { doc: withGroups(doc, groups), selectedId: layer.id };
 }
 
-export function toggleHidden(doc: IconDocument, id: number): IconDocument {
-  const groups = doc.composition.groups.map((g) => {
-    if (g.id === id) return { ...g, isHidden: !g.isHidden };
-    if (g.layers.some((l) => l.id === id))
-      return { ...g, layers: g.layers.map((l) => (l.id === id ? { ...l, isHidden: !l.isHidden } : l)) };
-    return g;
-  });
-  return withGroups(doc, groups);
+/** The platform override, when present, controls the effective eye state. */
+export function visibilitySlot(member: Group | Layer, slot: string | null, platform?: string): string | null {
+  return platform && member.specs[platform]?.isHidden != null ? platform : slot;
+}
+
+/** null edits the base; a named slot edits only that specialization. */
+export function setMemberHidden(doc: IconDocument, id: number, hidden: boolean, slot: string | null): IconDocument {
+  const group = findGroup(doc, id);
+  if (group) return replaceGroup(doc, slot == null ? { ...group, isHidden: hidden }
+    : { ...group, specs: { ...group.specs, [slot]: { ...group.specs[slot], isHidden: hidden } } });
+  const layer = findLayer(doc, id);
+  if (layer) return replaceLayer(doc, slot == null ? { ...layer, isHidden: hidden }
+    : { ...layer, specs: { ...layer.specs, [slot]: { ...layer.specs[slot], isHidden: hidden } } });
+  return doc;
+}
+
+export function setMemberOpacity(doc: IconDocument, id: number, opacity: number, slot: string | null): IconDocument {
+  const member = findGroup(doc, id) ?? findLayer(doc, id);
+  if (!member) return doc;
+  const next = slot == null ? { ...member, opacity }
+    : { ...member, specs: { ...member.specs, [slot]: { ...member.specs[slot], opacity } } };
+  return next.kind === "group" ? replaceGroup(doc, next) : replaceLayer(doc, next);
+}
+
+/** Remove one property without deleting the slot's other overrides. */
+export function clearMemberOverride(doc: IconDocument, id: number, slot: string, property: "isHidden" | "opacity"): IconDocument {
+  const member = findGroup(doc, id) ?? findLayer(doc, id);
+  if (!member?.specs[slot] || member.specs[slot][property] == null) return doc;
+  const specs = { ...member.specs };
+  const rest = { ...specs[slot] };
+  delete rest[property];
+  if (Object.keys(rest).length) specs[slot] = rest;
+  else delete specs[slot];
+  return member.kind === "group" ? replaceGroup(doc, { ...member, specs })
+    : replaceLayer(doc, { ...member, specs });
+}
+
+export const clearVisibilityOverride = (doc: IconDocument, id: number, slot: string): IconDocument =>
+  clearMemberOverride(doc, id, slot, "isHidden");
+
+export function toggleHidden(doc: IconDocument, id: number, slot: string | null = null, platform?: string): IconDocument {
+  const member = findGroup(doc, id) ?? findLayer(doc, id);
+  if (!member) return doc;
+  const hidden = member.kind === "group" ? resolveGroup(member, slot, platform).isHidden
+    : resolveLayer(member, slot, platform).isHidden;
+  return setMemberHidden(doc, id, !hidden, visibilitySlot(member, slot, platform));
 }
 
 export function renameMember(doc: IconDocument, id: number, name: string): IconDocument {

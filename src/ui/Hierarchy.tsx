@@ -3,9 +3,11 @@ import {
   addLayer,
   addGroup,
   toggleHidden,
+  visibilitySlot,
   renameMember,
 } from "../model/document";
-import { Group, Layer, IconDocument } from "../model/types";
+import { Group, Layer, IconDocument, slotOf } from "../model/types";
+import { resolveMemberVisibility } from "../model/memberVisibility";
 import { useRef, useState } from "react";
 import { Folder, FolderPlus, Plus, Minus, Eye, EyeOff } from "lucide-react";
 import type { ChromePlatform } from "./WindowChrome";
@@ -54,7 +56,13 @@ function TreeRow(props: {
   name: string;
   depth: number;
   icon: React.ReactNode;
+  /** Own hidden flag only; opacity/parent suppression is shown separately. */
   visible?: boolean;
+  inactive?: boolean;
+  inactiveReason?: string;
+  statusBadge?: string;
+  visibilityScope?: string;
+  onToggleVisible?: () => void;
   dnd?: boolean;
   selectedId: number;
   select: (id: number) => void;
@@ -67,6 +75,11 @@ function TreeRow(props: {
     depth,
     icon,
     visible,
+    inactive,
+    inactiveReason,
+    statusBadge,
+    visibilityScope,
+    onToggleVisible,
     dnd,
     selectedId,
     select,
@@ -86,6 +99,7 @@ function TreeRow(props: {
       draggable={false}
       data-hierarchy-row-id={id}
       data-hierarchy-dnd={dnd ? "true" : "false"}
+      title={inactiveReason}
       onPointerDown={(e) => {
         if (!dnd || editing || e.button !== 0) return;
         if (e.target instanceof Element && e.target.closest("button,input")) return;
@@ -111,7 +125,7 @@ function TreeRow(props: {
           className={`absolute left-2 right-2 h-[2px] bg-accent rounded-full ${drag.over!.before ? "-top-px" : "-bottom-px"}`}
         />
       )}
-      <span className="mr-1.5 flex items-center">{icon}</span>
+      <span className={`mr-1.5 flex items-center ${inactive ? "opacity-40" : ""}`}>{icon}</span>
       {editing ? (
         <input
           autoFocus
@@ -125,15 +139,19 @@ function TreeRow(props: {
           className="flex-1 min-w-0 bg-[color:var(--popover)] text-[color:var(--tx)] rounded px-1 mr-1 text-[13px] outline-none"
         />
       ) : (
-        <span className="flex-1 truncate text-[13px]">{name}</span>
+        <span className={`flex-1 truncate text-[13px] ${inactive ? "opacity-50" : ""}`}>{name}</span>
       )}
+      {statusBadge && <span className="text-[10px] shrink-0 mr-1" title={inactiveReason}>{statusBadge}</span>}
       {visible != null && (
         <button
+          aria-label={`${visible ? "Set" : "Clear"} hidden flag for ${name} (${visibilityScope})`}
+          aria-pressed={!visible}
+          title={`${visible ? "Set" : "Clear"} hidden flag in ${visibilityScope}`}
           onClick={(e) => {
             e.stopPropagation();
-            update((d) => toggleHidden(d, id));
+            onToggleVisible?.();
           }}
-          className={`mr-2 opacity-0 group-hover:opacity-100 ${visible ? "" : "opacity-100"} ${sel ? "text-white/80" : "text-[color:var(--tx-3)]"}`}
+          className={`mr-2 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 ${visible ? "" : "opacity-100"} ${sel ? "text-white/80" : "text-[color:var(--tx-3)]"}`}
         >
           {visible ? <Eye size={14} /> : <EyeOff size={14} />}
         </button>
@@ -150,6 +168,12 @@ export function Hierarchy({ chromePlatform }: { chromePlatform: ChromePlatform }
   const deleteSelected = useStore((s) => s.deleteSelected);
   const reorder = useStore((s) => s.reorder);
   const layerThumbs = useStore((s) => s.layerThumbs);
+  const appearance = useStore((s) => s.appearance);
+  const slot = slotOf(appearance);
+  const visibilityProps = (member: Group | Layer) => ({
+    visibilityScope: visibilitySlot(member, slot, doc.previewPlatform) ?? "All (base)",
+    onToggleVisible: () => update((d) => toggleHidden(d, member.id, slot, doc.previewPlatform)),
+  });
   const [dragId, setDragId] = useState<number | null>(null);
   const [over, setOver] = useState<{ id: number; before: boolean } | null>(
     null,
@@ -246,31 +270,45 @@ export function Hierarchy({ chromePlatform }: { chromePlatform: ChromePlatform }
           icon={<AppIcon light={selectedId === ICON_ID} />}
           {...common}
         />
-        {doc.composition.groups.map((g: Group) => (
-          <div key={g.id}>
-            <TreeRow
-              id={g.id}
-              name={g.name}
-              depth={1}
-              icon={<FolderIcon light={selectedId === g.id} />}
-              visible={!g.isHidden}
-              dnd
-              {...common}
-            />
-            {g.layers.map((l: Layer) => (
+        {doc.composition.groups.map((g) => {
+          const state = resolveMemberVisibility(g, slot, doc.previewPlatform);
+          return (
+            <div key={g.id}>
               <TreeRow
-                key={l.id}
-                id={l.id}
-                name={l.name}
-                depth={2}
-                icon={<Thumb src={layerThumbs[l.id]} />}
-                visible={!l.isHidden}
+                id={g.id}
+                name={g.name}
+                depth={1}
+                icon={<FolderIcon light={selectedId === g.id} />}
+                visible={!state.hidden}
+                inactive={!state.visible}
+                inactiveReason={state.description}
+                statusBadge={state.badge}
+                {...visibilityProps(g)}
                 dnd
                 {...common}
               />
-            ))}
-          </div>
-        ))}
+              {g.layers.map((l) => {
+                const layerState = resolveMemberVisibility(l, slot, doc.previewPlatform, g);
+                return (
+                  <TreeRow
+                    key={l.id}
+                    id={l.id}
+                    name={l.name}
+                    depth={2}
+                    icon={<Thumb src={layerThumbs[l.id]} />}
+                    visible={!layerState.hidden}
+                    inactive={!layerState.visible}
+                    inactiveReason={layerState.description}
+                    statusBadge={layerState.badge}
+                    {...visibilityProps(l)}
+                    dnd
+                    {...common}
+                  />
+                );
+              })}
+            </div>
+          );
+        })}
       </div>
       <div className="h-11 border-t border-[color:var(--line)] flex items-center px-2 gap-0.5">
         <button
