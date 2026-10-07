@@ -1,5 +1,5 @@
 // Read/write Apple's real `.icon` icon.json. Ported from IconIO.kt; schema validated against
-// Apple's ictool (see ../../ICON_FORMAT.md). Kebab-case keys; colours are strings; fill is a
+// Apple's ictool (see ../../ref/ICON_FORMAT.md). Kebab-case keys; colours are strings; fill is a
 // kind-keyed object; blur-material is a bare number; position = {scale, translation-in-points:[x,y]};
 // shadow = {kind, opacity}; appearance specializations under <prop>-specializations.
 import {
@@ -84,7 +84,7 @@ function posDecode(o: any): { scale: number; pos: Position } {
   const x = Array.isArray(t) ? t[0] ?? 0 : 0, y = Array.isArray(t) ? t[1] ?? 0 : 0;
   return { scale: o.scale ?? 1, pos: { x, y } };
 }
-const shadowEncode = (s: Shadow) => ({ kind: SHADOW_OUT[s.enabled ? (s.kind === "none" ? "neutral" : s.kind) : "none"], opacity: num(s.opacity) });
+const shadowEncode = (s: Shadow) => ({ kind: SHADOW_OUT[s.enabled ? s.kind : "none"], opacity: num(s.opacity) });
 function shadowDecode(o: any): Shadow {
   if (!o) return { ...defaultShadow(), kind: "none", enabled: false };
   const kind = shadowKindParse(o.kind);
@@ -97,8 +97,12 @@ const PLATFORM_SLOTS = new Set(["iOS", "macOS", "watchOS"]);
 const appleAppearance = (slot: string) => (slot === "Default" ? "light" : slot === "Dark" ? "dark" : slot === "Mono" ? "tinted" : "base");
 const slotFromAppearance = (a: any): string | null => (a === "light" ? "Default" : a === "dark" ? "Dark" : a === "tinted" ? "Mono" : null);
 const specSlotFromEntry = (e: any): string | null => {
+  // The inspector has one axis per slot. Never collapse a locale, direction or
+  // appearance+idiom combination into a global appearance/platform override.
+  if (e?.localization != null || e?.languageDirection != null) return null;
+  if (e?.idiom != null && typeof e.idiom !== "string") return null;
   const idiom = typeof e?.idiom === "string" ? e.idiom : null;
-  if (idiom && PLATFORM_SLOTS.has(idiom)) return idiom;
+  if (idiom) return PLATFORM_SLOTS.has(idiom) && (e.appearance == null || e.appearance === "base") ? idiom : null;
   return slotFromAppearance(e?.appearance);
 };
 const specializationFields = (slot: string) =>
@@ -109,8 +113,10 @@ function baseSpecValue(o: any, key: string): any {
   const entry = arr.find((e: any) => e && "value" in e && !hasSpecializationAxis(e));
   return entry?.value;
 }
-function ownOrBase(o: any, ownKey: string, specKey: string = `${ownKey}-specializations`): any {
-  return o && ownKey in o ? o[ownKey] : baseSpecValue(o, specKey);
+function ownOrBase(o: any, ownKey: string, specKey: string = `${ownKey}-specializations`, alias?: string): any {
+  if (o && ownKey in o) return o[ownKey];
+  if (o && alias && alias in o) return o[alias];
+  return baseSpecValue(o, specKey);
 }
 function specEntries(o: any, key: string): Array<{ slot: string; value: any }> {
   const arr = Array.isArray(o[key]) ? o[key] : [];
@@ -124,9 +130,9 @@ function specEntries(o: any, key: string): Array<{ slot: string; value: any }> {
 
 // ============================ encode ============================
 const DOC_KEYS = new Set(["supported-platforms", "fill", "fill-specializations", "implicit-asset-mirroring", "groups"]);
-const GROUP_KEYS = new Set(["name", "opacity", "blend-mode", "lighting", "specular", "blur-material", "translucency", "shadow", "position", "is-hidden", "asset-mirroring", "layers",
+const GROUP_KEYS = new Set(["name", "opacity", "blend-mode", "lighting", "specular", "blur-material", "translucency", "shadow", "position", "is-hidden", "hidden", "asset-mirroring", "layers",
   "opacity-specializations", "blend-mode-specializations", "lighting-specializations", "specular-specializations", "blur-material-specializations", "translucency-specializations", "shadow-specializations", "position-specializations", "hidden-specializations", "asset-mirroring-specializations"]);
-const LAYER_KEYS = new Set(["name", "image-name", "is-glass", "fill", "opacity", "blend-mode", "position", "is-hidden", "asset-mirroring",
+const LAYER_KEYS = new Set(["name", "image-name", "is-glass", "glass", "fill", "opacity", "blend-mode", "position", "is-hidden", "hidden", "asset-mirroring",
   "image-name-specializations", "fill-specializations", "opacity-specializations", "blend-mode-specializations", "glass-specializations", "position-specializations", "hidden-specializations", "asset-mirroring-specializations"]);
 
 function preserve(out: any, raw: any, modeled: Set<string>) {
@@ -137,7 +143,65 @@ function putSpecs(out: any, entries: Record<string, Array<{ slot: string; value:
     if (list.length) out[k] = list.map((e) => ({ ...specializationFields(e.slot), value: e.value }));
 }
 
-function encodeGroup(g: Group): any {
+type Property = { key: string; specs?: string; alias?: string };
+const property = (key: string, specs = `${key}-specializations`, alias?: string): Property => ({ key, specs, alias });
+const GROUP_PROPERTIES: Property[] = [
+  { key: "name" }, ...["opacity", "blend-mode", "lighting", "specular", "blur-material", "translucency", "shadow", "position", "asset-mirroring"].map((key) => property(key)),
+  property("is-hidden", "hidden-specializations", "hidden"),
+];
+const LAYER_PROPERTIES: Property[] = [
+  { key: "name" }, ...["image-name", "fill", "opacity", "blend-mode", "position", "asset-mirroring"].map((key) => property(key)),
+  property("is-glass", "glass-specializations", "glass"), property("is-hidden", "hidden-specializations", "hidden"),
+];
+const sameValue = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Compare with the decoded source's canonical projection, then retain source
+ * values for properties/slots the user did not change. This keeps color-space
+ * tags, gradient endpoints, omitted defaults and axisless writer style intact.
+ * Axes outside the inspector's model always survive, including during edits.
+ */
+function restoreSourceProperties(out: any, raw: any, baseline: any, properties: Property[]) {
+  if (!raw || typeof raw !== "object") return;
+  for (const { key, specs, alias } of properties) {
+    const baseUnchanged = sameValue(out[key], baseline[key]);
+    if (baseUnchanged) {
+      delete out[key];
+      if (key in raw) out[key] = raw[key];
+      if (alias && alias in raw) out[alias] = raw[alias];
+    } else if (alias && alias in raw && !(key in raw) && key in out) {
+      out[alias] = out[key];
+      delete out[key];
+    }
+    if (!specs) continue;
+    const current = new Map(specEntries(out, specs).map((entry) => [entry.slot, entry.value]));
+    const original = new Map(specEntries(baseline, specs).map((entry) => [entry.slot, entry.value]));
+    const remaining = new Set(current.keys());
+    const restored: any[] = [];
+    for (const entry of Array.isArray(raw[specs]) ? raw[specs] : []) {
+      const slot = specSlotFromEntry(entry);
+      if (!slot) {
+        if (hasSpecializationAxis(entry) || baseUnchanged) restored.push(entry);
+        continue;
+      }
+      // A recognized axis can still contain a future value type the decoder
+      // does not model. Its absence from the model is not an override deletion.
+      if (!original.has(slot) && !current.has(slot)) {
+        restored.push(entry);
+        continue;
+      }
+      if (!current.has(slot)) continue; // The user removed this override.
+      if (sameValue(current.get(slot), original.get(slot))) restored.push(entry);
+      else if (remaining.has(slot)) restored.push({ ...entry, value: current.get(slot) });
+      remaining.delete(slot);
+    }
+    for (const slot of remaining) restored.push({ ...specializationFields(slot), value: current.get(slot) });
+    delete out[specs];
+    if (restored.length || (Array.isArray(raw[specs]) && raw[specs].length === 0)) out[specs] = restored;
+  }
+}
+
+function encodeGroup(g: Group, preserveSource = true): any {
   const o: any = {};
   preserve(o, g.raw, GROUP_KEYS);
   if (g.name) o.name = g.name;
@@ -146,10 +210,10 @@ function encodeGroup(g: Group): any {
   o.lighting = g.lighting;
   o.specular = g.specular.enabled;
   if (g.blurMaterial.enabled) o["blur-material"] = num(g.blurMaterial.strength);
-  if (g.translucency.enabled) o.translucency = { enabled: true, value: num(g.translucency.value) };
+  o.translucency = { enabled: g.translucency.enabled, value: num(g.translucency.value) };
   o.shadow = shadowEncode(g.shadow);
   o.position = posEncode(g.scale, g.position);
-  if (g.isHidden) o["is-hidden"] = true;
+  o["is-hidden"] = g.isHidden;
   if (g.mirrorInRTL) o["asset-mirroring"] = { mirrorable: true };
   const specs: Record<string, any[]> = {};
   const add = (k: string, slot: string, v: any) => (specs[k] ??= []).push({ slot, value: v });
@@ -166,10 +230,11 @@ function encodeGroup(g: Group): any {
     if (s.mirrorInRTL != null) add("asset-mirroring-specializations", slot, { mirrorable: s.mirrorInRTL });
   }
   putSpecs(o, specs);
-  o.layers = g.layers.map(encodeLayer);
+  if (preserveSource && g.raw) restoreSourceProperties(o, g.raw, encodeGroup(decodeGroup(g.raw, false), false), GROUP_PROPERTIES);
+  o.layers = g.layers.map((layer) => encodeLayer(layer, preserveSource));
   return o;
 }
-function encodeLayer(l: Layer): any {
+function encodeLayer(l: Layer, preserveSource = true): any {
   const o: any = {};
   preserve(o, l.raw, LAYER_KEYS);
   if (l.name) o.name = l.name;
@@ -179,7 +244,7 @@ function encodeLayer(l: Layer): any {
   o.opacity = num(l.opacity);
   o["blend-mode"] = BLEND_OUT[l.blendMode];
   o.position = posEncode(l.scale, l.position);
-  if (l.isHidden) o["is-hidden"] = true;
+  o["is-hidden"] = l.isHidden;
   if (l.mirrorInRTL) o["asset-mirroring"] = { mirrorable: true };
   const specs: Record<string, any[]> = {};
   const add = (k: string, slot: string, v: any) => (specs[k] ??= []).push({ slot, value: v });
@@ -194,6 +259,7 @@ function encodeLayer(l: Layer): any {
     if (s.mirrorInRTL != null) add("asset-mirroring-specializations", slot, { mirrorable: s.mirrorInRTL });
   }
   putSpecs(o, specs);
+  if (preserveSource && l.raw) restoreSourceProperties(o, l.raw, encodeLayer(decodeLayer(l.raw, false), false), LAYER_PROPERTIES);
   return o;
 }
 
@@ -221,8 +287,35 @@ export function encodeIcon(doc: IconDocument): string {
   for (const [slot, fill] of Object.entries(doc.composition.fillSpecs ?? {}))
     (fillSpecs["fill-specializations"] ??= []).push({ slot, value: fillEncode(fill) });
   putSpecs(root, fillSpecs);
-  root.groups = doc.composition.groups.map(encodeGroup);
+  const raw = doc.composition.extras;
+  if (raw && typeof raw === "object") {
+    const plat = decodePlatforms(raw["supported-platforms"]);
+    const baseline: any = { "supported-platforms": encodePlatforms(plat.platforms, plat.squaresShared) };
+    const rootFill = ownOrBase(raw, "fill");
+    baseline.fill = fillEncode(rootFill === undefined ? defaultFill() : fillDecode(rootFill));
+    if (raw["implicit-asset-mirroring"]) baseline["implicit-asset-mirroring"] = true;
+    const entries: Record<string, any[]> = {};
+    for (const { slot, value } of specEntries(raw, "fill-specializations"))
+      (entries["fill-specializations"] ??= []).push({ slot, value: fillEncode(fillDecode(value)) });
+    putSpecs(baseline, entries);
+    restoreSourceProperties(root, raw, baseline, [property("fill"), { key: "supported-platforms" }, { key: "implicit-asset-mirroring" }]);
+  }
+  root.groups = doc.composition.groups.map((group) => encodeGroup(group));
   return JSON.stringify(root, null, 2);
+}
+
+/** Collect asset references from the final JSON, including preserved multi-axis overrides. */
+export function iconAssetNames(jsonText: string): string[] {
+  const root = JSON.parse(jsonText);
+  const names = new Set<string>();
+  for (const group of Array.isArray(root.groups) ? root.groups : []) {
+    for (const layer of Array.isArray(group.layers) ? group.layers : []) {
+      if (typeof layer["image-name"] === "string") names.add(layer["image-name"]);
+      for (const entry of Array.isArray(layer["image-name-specializations"]) ? layer["image-name-specializations"] : [])
+        if (typeof entry?.value === "string") names.add(entry.value);
+    }
+  }
+  return [...names];
 }
 
 // ============================ decode ============================
@@ -271,16 +364,16 @@ function decodeLayerSpecs(o: any): Record<string, LayerSpec> {
   for (const { slot, value } of specEntries(o, "asset-mirroring-specializations")) if (value && typeof value === "object") upd(slot, (s) => (s.mirrorInRTL = !!value.mirrorable));
   return out;
 }
-function decodeLayer(o: any): Layer {
+function decodeLayer(o: any, generateIds = true): Layer {
   const { scale, pos } = posDecode(ownOrBase(o, "position", "position-specializations"));
   const spec: Specular = defaultSpecular();
   const imageName = ownOrBase(o, "image-name", "image-name-specializations");
   const fill = ownOrBase(o, "fill", "fill-specializations");
-  const isGlass = ownOrBase(o, "is-glass", "glass-specializations");
-  const hidden = ownOrBase(o, "is-hidden", "hidden-specializations");
+  const isGlass = ownOrBase(o, "is-glass", "glass-specializations", "glass");
+  const hidden = ownOrBase(o, "is-hidden", "hidden-specializations", "hidden");
   const mirror = ownOrBase(o, "asset-mirroring", "asset-mirroring-specializations");
   return {
-    kind: "layer", id: newId(), name: o.name ?? "Layer", isHidden: !!hidden,
+    kind: "layer", id: generateIds ? newId() : 0, name: o.name ?? "Layer", isHidden: !!hidden,
     imageName: typeof imageName === "string" ? imageName : null, isGlass: isGlass ?? true,
     fill: fill === undefined ? { ...defaultFill(), kind: "none" } : fillDecode(fill),
     opacity: ownOrBase(o, "opacity", "opacity-specializations") ?? 1, position: pos, scale,
@@ -288,15 +381,15 @@ function decodeLayer(o: any): Layer {
     specular: spec, mirrorInRTL: !!(mirror?.mirrorable), specs: decodeLayerSpecs(o), raw: o,
   };
 }
-function decodeGroup(o: any): Group {
+function decodeGroup(o: any, generateIds = true): Group {
   const { scale, pos } = posDecode(ownOrBase(o, "position", "position-specializations"));
   const specular = ownOrBase(o, "specular", "specular-specializations");
   const shadow = ownOrBase(o, "shadow", "shadow-specializations");
   const translucency = ownOrBase(o, "translucency", "translucency-specializations");
   const mirror = ownOrBase(o, "asset-mirroring", "asset-mirroring-specializations");
   return {
-    kind: "group", id: newId(), name: o.name ?? "Group", isHidden: !!ownOrBase(o, "is-hidden", "hidden-specializations"),
-    layers: Array.isArray(o.layers) ? o.layers.map(decodeLayer) : [],
+    kind: "group", id: generateIds ? newId() : 0, name: o.name ?? "Group", isHidden: !!ownOrBase(o, "is-hidden", "hidden-specializations", "hidden"),
+    layers: Array.isArray(o.layers) ? o.layers.map((layer: any) => decodeLayer(layer, generateIds)) : [],
     opacity: ownOrBase(o, "opacity", "opacity-specializations") ?? 1, position: pos, scale,
     blendMode: blendParse(ownOrBase(o, "blend-mode", "blend-mode-specializations")),
     glassEnabled: true, blurMaterial: blurDecode(ownOrBase(o, "blur-material", "blur-material-specializations")),
@@ -317,7 +410,7 @@ export function decodeIcon(jsonText: string, name: string): IconDocument {
   return {
     name: name || "Untitled",
     composition: {
-      groups: Array.isArray(root.groups) ? root.groups.map(decodeGroup) : [],
+      groups: Array.isArray(root.groups) ? root.groups.map((group: any) => decodeGroup(group)) : [],
       fill: rootFill === undefined ? defaultFill() : fillDecode(rootFill),
       fillSpecs,
       implicitAssetMirroring: !!root["implicit-asset-mirroring"],
