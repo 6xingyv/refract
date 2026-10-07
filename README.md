@@ -15,15 +15,54 @@ Authors `.icon` files and renders icons with the Liquid Glass effect.
 
 <img src="./docs/img/screenshot.png"/>
 
-### 🥇 Comparison
+### Rendering Results
 
-<img src="./docs/img/comparison.png" alt="comparison">
+Some default app icons rendered by Refract.
 
-Left: Icon Composer by Apple
-
-Right: Refract
-
-(Please ignore the difference in background colors)
+<table>
+  <tr>
+    <td align="center">
+      <a href="./docs/img/results/AppStore-iOS-Default.png"><img src="./docs/img/results/AppStore-iOS-Default.png" width="200" alt="App Store rendered by Refract, iOS Default"/></a><br/>
+      App Store
+    </td>
+    <td align="center">
+      <a href="./docs/img/results/Books-iOS-Default.png"><img src="./docs/img/results/Books-iOS-Default.png" width="200" alt="Books rendered by Refract, iOS Default"/></a><br/>
+      Books
+    </td>
+    <td align="center">
+      <a href="./docs/img/results/FaceTime-iOS-Default.png"><img src="./docs/img/results/FaceTime-iOS-Default.png" width="200" alt="FaceTime rendered by Refract, iOS Default"/></a><br/>
+      FaceTime
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="./docs/img/results/Games-iOS-Default.png"><img src="./docs/img/results/Games-iOS-Default.png" width="200" alt="Games rendered by Refract, iOS Default"/></a><br/>
+      Games
+    </td>
+    <td align="center">
+      <a href="./docs/img/results/Journal-iOS-Default.png"><img src="./docs/img/results/Journal-iOS-Default.png" width="200" alt="Journal rendered by Refract, iOS Default"/></a><br/>
+      Journal
+    </td>
+    <td align="center">
+      <a href="./docs/img/results/Maps-iOS-Default.png"><img src="./docs/img/results/Maps-iOS-Default.png" width="200" alt="Maps rendered by Refract, iOS Default"/></a><br/>
+      Maps
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="./docs/img/results/MobileSafari-iOS-Default.png"><img src="./docs/img/results/MobileSafari-iOS-Default.png" width="200" alt="Safari rendered by Refract, iOS Default"/></a><br/>
+      Safari
+    </td>
+    <td align="center">
+      <a href="./docs/img/results/Stocks-iOS-Default.png"><img src="./docs/img/results/Stocks-iOS-Default.png" width="200" alt="Stocks rendered by Refract, iOS Default"/></a><br/>
+      Stocks
+    </td>
+    <td align="center">
+      <a href="./docs/img/results/Weather-iOS-Default.png"><img src="./docs/img/results/Weather-iOS-Default.png" width="200" alt="Weather rendered by Refract, iOS Default"/></a><br/>
+      Weather
+    </td>
+  </tr>
+</table>
 
 ## 💻 Develop
 
@@ -34,8 +73,6 @@ bun tauri dev
 
 `bun run dev` runs the web frontend alone (Open/Save need the Tauri shell; rendering uses
 WebGPU when available and automatically falls back to WebGL2).
-
-Auto-update release setup is documented in [docs/UPDATER.md](./docs/UPDATER.md).
 
 ## 📦 Build
 
